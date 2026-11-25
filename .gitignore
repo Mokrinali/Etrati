@@ -1,0 +1,21 @@
+# environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# downloaded with scripts/get_tessdata.ps1
+data/tessdata/
+
+# machine-specific
+*.lnk
+*.code-workspace
+
+# documents never belong in the repository
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+*.pfx
+*.p12
+*.tmp

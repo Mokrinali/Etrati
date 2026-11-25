@@ -1,0 +1,1118 @@
+"""Editing operations beyond pages: comments, forms, content, redaction, OCR, security.
+
+Like page operations, every op is deterministic plain data, so undo and crash
+recovery can replay it. Anything slow or environment-dependent (OCR) runs first
+as a query, and its *result* becomes the op.
+
+Coordinates coming in are displayed page space. On a rotated page they are
+turned with derotation_matrix and insertions get rotate=page.rotation.
+"""
+from __future__ import annotations
+
+import difflib
+import html
+import io
+import math
+import os
+
+import pymupdf
+from pymupdf import Matrix, Point, Quad, Rect
+
+from . import legacy
+from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char
+
+FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+TESSDATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "data", "tessdata")
+OCR_MAX_PIXELS = 30_000_000
+
+
+# ---------------------------------------------------------------------------
+# fonts
+# ---------------------------------------------------------------------------
+def _font_file(text: str, serif=False, mono=False, bold=False, italic=False) -> str:
+    """A Windows font that has every character of text; style is best effort."""
+    b, i = ("b" if bold else ""), ("i" if italic else "")
+    names = []
+    if mono:
+        names.append({"": "consola", "b": "consolab", "i": "consolai", "bi": "consolaz"}[b + i])
+    if serif:
+        names.append({"": "times", "b": "timesbd", "i": "timesi", "bi": "timesbi"}[b + i])
+        names.append("segoeuib" if bold else "sylfaen")
+    names.append({"": "segoeui", "b": "segoeuib", "i": "segoeuii", "bi": "segoeuiz"}[b + i])
+    names += ["segoeuib" if bold else "segoeui", "sylfaen", "arial", "seguisym"]
+    need = {c for c in text if c not in "\n\r\t"}
+    best, most = None, -1
+    for name in names:
+        path = os.path.join(FONTS, name + ".ttf")
+        if not os.path.exists(path):
+            continue
+        font = pymupdf.Font(fontfile=path)
+        have = sum(1 for c in need if font.has_glyph(ord(c)))
+        if have == len(need):
+            return path
+        if have > most:
+            best, most = path, have
+    if best is None:
+        raise EngineError("no_font")
+    return best
+
+
+def _subset(path: str, text: str) -> bytes:
+    """Only the glyphs that are used, so a file grows by kilobytes, not megabytes."""
+    import logging
+    from fontTools import subset
+    logging.getLogger("fontTools").setLevel(logging.ERROR)
+    from fontTools.ttLib import TTFont
+    font = TTFont(path)
+    opt = subset.Options()
+    opt.notdef_outline, opt.recalc_timestamp = True, False
+    opt.layout_features = []
+    sub = subset.Subsetter(opt)
+    sub.populate(text=text + " ")
+    sub.subset(font)
+    out = io.BytesIO()
+    font.save(out)
+    return out.getvalue()
+
+
+class _Type:
+    """Writes text on a page with a subset font."""
+
+    def __init__(self, page, text, **style):
+        path = _font_file(text, **style)
+        data = _subset(path, text)
+        self.page, self.font = page, pymupdf.Font(fontbuffer=data)
+        self.name = f"FU{page.parent.xref_length()}"
+        page.insert_font(fontname=self.name, fontbuffer=data)
+
+    def width(self, text, size):
+        return self.font.text_length(text, fontsize=size)
+
+    def put(self, at: Point, text, size, color=(0, 0, 0), angle=0.0, opacity=1.0,
+            overlay=True, mode=0, rotate=None, to=None):
+        """at is in displayed space; angle turns counter-clockwise as displayed."""
+        page = self.page
+        pt = Point(at) * page.derotation_matrix
+        morph = (pt, Matrix(angle)) if angle else None
+        (to or page).insert_text(
+            pt, text, fontname=self.name, fontsize=size, color=color,
+            rotate=page.rotation if rotate is None else rotate, morph=morph,
+            render_mode=mode, **({} if to else {"overlay": overlay, "fill_opacity": opacity,
+                                                "stroke_opacity": opacity}))
+
+
+def _words(lines):
+    """[(x0, y0, x1, y1, word), ...] from Engine.chars() lines."""
+    out = []
+    for ln in lines:
+        cur = None
+        for x0, y0, x1, y1, c in ln:
+            if c.isspace():
+                cur = None
+                continue
+            if cur is not None:
+                size = max(min(cur[2] - cur[0], cur[3] - cur[1]), 1.0)
+                gap = max(x0 - cur[2], cur[0] - x1, y0 - cur[3], cur[1] - y1)
+                if gap > size * 0.8:
+                    cur = None
+            if cur is None:
+                cur = [x0, y0, x1, y1, c]
+                out.append(cur)
+            else:
+                cur[:] = [min(cur[0], x0), min(cur[1], y0), max(cur[2], x1), max(cur[3], y1),
+                          cur[4] + c]
+    return [tuple(w) for w in out]
+
+
+def _ocr_words(raw) -> list:
+    """Words of an OCR text page. MuPDF runs Georgian words together, but the gaps survive."""
+    out = []
+    for block in raw["blocks"]:
+        for line in block.get("lines", ()):
+            cur, size = None, 1.0
+            for span in line["spans"]:
+                for c in span["chars"]:
+                    x0, y0, x1, y1 = c["bbox"]
+                    if c["c"].isspace():
+                        cur = None
+                        continue
+                    if cur is not None and (x0 - cur[2] > 0.14 * size or x0 < cur[0]):
+                        cur = None
+                    if cur is None:
+                        cur = [x0, y0, x1, y1, c["c"]]
+                        out.append(cur)
+                    else:
+                        cur[:] = [cur[0], min(cur[1], y0), max(cur[2], x1), max(cur[3], y1),
+                                  cur[4] + c["c"]]
+                    size = max(y1 - y0, 1.0)
+    return [tuple(w) for w in out if w[4].strip() and w[2] - w[0] > 0.5]
+
+
+class Features(EditEngine):
+    def __init__(self):
+        super().__init__()
+        self._security = None
+        self._notes: list = []       # what the user should be told about the last operation
+
+    def open(self, path, password=""):
+        info = super().open(path, password)
+        self._security = None
+        perm = self.doc.permissions
+        info.update(
+            can_annotate=bool(perm & (pymupdf.PDF_PERM_ANNOTATE | pymupdf.PDF_PERM_MODIFY)),
+            can_fill=bool(perm & (pymupdf.PDF_PERM_FORM | pymupdf.PDF_PERM_ANNOTATE
+                                  | pymupdf.PDF_PERM_MODIFY)),
+            can_modify=bool(perm & pymupdf.PDF_PERM_MODIFY),
+            is_form=bool(self.doc.is_form_pdf),
+        )
+        return info
+
+    def _info(self):
+        info = super()._info()
+        info["notes"], self._notes = list(self._notes), []
+        info["is_form"] = bool(self.doc.is_form_pdf)
+        return info
+
+    def _same(self, *changed):
+        return [-1 if i in changed else i for i in range(self.doc.page_count)]
+
+    # -- comments ----------------------------------------------------------
+    def _annot_list(self, page):
+        return [a for a in page.annots() if a.type[1] not in ("Popup", "Redact")]
+
+    def annots(self, pno):
+        page = self.doc.load_page(pno)
+        out = []
+        for i, a in enumerate(self._annot_list(page)):
+            info = a.info
+            out.append({"index": i, "type": a.type[1], "rect": tuple(a.rect * page.rotation_matrix),
+                        "text": info.get("content") or "", "author": info.get("title") or "",
+                        "date": info.get("modDate") or ""})
+        return out
+
+    def all_annots(self):
+        out = []
+        for pno in range(self.doc.page_count):
+            for a in self.annots(pno):
+                out.append((pno, a))
+        return out
+
+    def _find_annot(self, page, index, kind):
+        items = self._annot_list(page)
+        if index >= len(items) or items[index].type[1] != kind:
+            raise EngineError("stale")
+        return items[index]
+
+    def _op_annot(self, pno, kind, data, meta):
+        page = self.doc.load_page(pno)
+        m, rot = page.derotation_matrix, page.rotation
+        color = data.get("color", (1, 0, 0))
+        width = data.get("width", 1.5)
+        text = data.get("text", "")
+
+        def pt(p):
+            return Point(p) * m
+        if kind in ("highlight", "underline", "strikeout", "squiggly"):
+            quads = [Quad(*[pt(p) for p in q]) for q in data["quads"]]
+            a = getattr(page, f"add_{kind}_annot")(quads)
+            a.set_colors(stroke=color)
+        elif kind == "note":
+            a = page.add_text_annot(pt(data["point"]), text, icon="Comment")
+            a.set_colors(stroke=color)
+        elif kind == "text":
+            a = page.add_freetext_annot(Rect(data["rect"]) * m, text, fontsize=data["size"],
+                                        text_color=color, rotate=rot)
+        elif kind == "stamp":
+            size = data.get("size", 18)
+            a = page.add_freetext_annot(Rect(data["rect"]) * m, text, fontsize=size,
+                                        text_color=color, border_width=2,
+                                        align=1, rotate=rot)
+        elif kind == "ink":
+            a = page.add_ink_annot([[tuple(pt(p)) for p in s] for s in data["strokes"]])
+        elif kind in ("rect", "ellipse"):
+            r = Rect(data["rect"]) * m
+            a = page.add_rect_annot(r) if kind == "rect" else page.add_circle_annot(r)
+        elif kind in ("line", "arrow"):
+            a = page.add_line_annot(pt(data["from"]), pt(data["to"]))
+            if kind == "arrow":
+                a.set_line_ends(pymupdf.PDF_ANNOT_LE_NONE, pymupdf.PDF_ANNOT_LE_OPEN_ARROW)
+        else:
+            raise EngineError("bad_op")
+        if kind in ("ink", "rect", "ellipse", "line", "arrow"):
+            a.set_colors(stroke=color)
+            a.set_border(width=width)
+        a.set_info(title=meta.get("author", ""), content=text,
+                   creationDate=meta.get("date", ""), modDate=meta.get("date", ""))
+        if kind == "text":
+            a.update(fontsize=data["size"], text_color=color, rotate=rot)
+        elif kind == "stamp":
+            a.update(fontsize=size, text_color=color, rotate=rot)
+        else:
+            a.update(opacity=data.get("opacity", 1))
+        self.doc.xref_set_key(a.xref, "NM", pymupdf.get_pdf_str(meta.get("id", "")))
+        return self._same(pno)
+
+    def _op_annot_del(self, pno, index, kind):
+        page = self.doc.load_page(pno)
+        page.delete_annot(self._find_annot(page, index, kind))
+        return self._same(pno)
+
+    def _op_annot_text(self, pno, index, kind, text, meta):
+        page = self.doc.load_page(pno)
+        a = self._find_annot(page, index, kind)
+        a.set_info(content=text, modDate=meta.get("date", ""))
+        if kind == "FreeText":
+            a.update(rotate=page.rotation)
+        else:
+            a.update()
+        return self._same(pno)
+
+    def _op_annot_move(self, pno, index, kind, dx, dy):
+        page = self.doc.load_page(pno)
+        a = self._find_annot(page, index, kind)
+        if kind not in ("FreeText", "Stamp", "Text", "Square", "Circle"):
+            raise EngineError("cannot_move")
+        r = a.rect * page.rotation_matrix + (dx, dy, dx, dy)
+        a.set_rect(r * page.derotation_matrix)
+        a.update() if kind != "FreeText" else a.update(rotate=page.rotation)
+        return self._same(pno)
+
+    def _op_flatten(self):
+        self.doc.bake(annots=True, widgets=True)
+        return [-1] * self.doc.page_count
+
+    # -- forms -------------------------------------------------------------
+    def widgets(self, pno):
+        page = self.doc.load_page(pno)
+        out = []
+        for i, w in enumerate(page.widgets()):
+            flags = w.field_flags or 0
+            kind = {pymupdf.PDF_WIDGET_TYPE_TEXT: "text",
+                    pymupdf.PDF_WIDGET_TYPE_CHECKBOX: "check",
+                    pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON: "radio",
+                    pymupdf.PDF_WIDGET_TYPE_COMBOBOX: "combo",
+                    pymupdf.PDF_WIDGET_TYPE_LISTBOX: "list",
+                    pymupdf.PDF_WIDGET_TYPE_SIGNATURE: "sign",
+                    }.get(w.field_type, "other")
+            value = w.field_value
+            if kind in ("check", "radio"):
+                value = value not in (None, False, "", "Off")
+                if kind == "radio":
+                    value = w.field_value == w.on_state()
+            out.append({
+                "index": i, "name": w.field_name or "", "kind": kind, "value": value,
+                "rect": tuple(w.rect * page.rotation_matrix),
+                "choices": [c[1] if isinstance(c, (list, tuple)) else c
+                            for c in (w.choice_values or [])],
+                "multiline": bool(flags & pymupdf.PDF_TX_FIELD_IS_MULTILINE),
+                "password": bool(flags & pymupdf.PDF_TX_FIELD_IS_PASSWORD),
+                "max": w.text_maxlen or 0,
+                "readonly": bool(flags & pymupdf.PDF_FIELD_IS_READ_ONLY),
+                "label": w.field_label or ""})
+        return out
+
+    def _widget(self, page, index):
+        items = list(page.widgets())
+        if index >= len(items):
+            raise EngineError("stale")
+        return items[index]
+
+    def _field_size(self, text, rect, multiline):
+        """A size at which the text really fits: automatic sizing drops Georgian words."""
+        font = pymupdf.Font(fontfile=_font_file(text or "a"))
+        w, h = max(rect.width, 8) - 5, max(rect.height, 6) - 2
+        size = 12.0 if multiline else min(12.0, h * 0.72)
+        while size > 4:
+            widths = [font.text_length(t, fontsize=size) for t in (text or "").split("\n")]
+            if multiline:
+                rows = sum(max(1, math.ceil(x * 1.08 / w)) for x in widths)
+                if rows * size * 1.3 <= h:
+                    break
+            elif max(widths) <= w:
+                break
+            size -= 0.5
+        return size
+
+    def _op_fill(self, pno, index, value):
+        page = self.doc.load_page(pno)
+        w = self._widget(page, index)
+        flags = w.field_flags or 0
+        if flags & pymupdf.PDF_FIELD_IS_READ_ONLY:
+            raise EngineError("read_only")
+        if w.field_type == pymupdf.PDF_WIDGET_TYPE_TEXT:
+            rect = w.rect
+            if page.rotation in (90, 270):
+                rect = Rect(0, 0, rect.height, rect.width)
+            if not w.text_fontsize:
+                size = self._field_size(value, rect,
+                                        bool(flags & pymupdf.PDF_TX_FIELD_IS_MULTILINE))
+                words = "" if flags & pymupdf.PDF_TX_FIELD_IS_PASSWORD else "".join(value.split())
+                color = w.text_color or (0,)
+                da = " ".join(f"{c:g}" for c in color) + {1: " g", 3: " rg", 4: " k"}[len(color)]
+                while True:
+                    # Only a size written into the widget itself survives update(). The font
+                    # drawn may be wider than the one measured, so look at the result.
+                    self.doc.xref_set_key(w.xref, "DA", pymupdf.get_pdf_str(
+                        f"{da} /{w.text_font or 'Helv'} {size:g} Tf"))
+                    page = w = None
+                    page = self.doc.load_page(pno)
+                    w = self._widget(page, index)
+                    w.field_value = value
+                    w.update()
+                    page = w = None
+                    page = self.doc.load_page(pno)
+                    w = self._widget(page, index)
+                    shown = "".join(page.get_text(clip=w.rect + (-1, -1, 1, 1)).split())
+                    if words in shown or size <= 3.5:
+                        break
+                    size -= .5
+            w.field_value = value
+        elif w.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX:
+            w.field_value = bool(value)
+        elif w.field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON:
+            w.field_value = bool(value)
+        elif w.field_type in (pymupdf.PDF_WIDGET_TYPE_COMBOBOX, pymupdf.PDF_WIDGET_TYPE_LISTBOX):
+            w.field_value = value
+        else:
+            raise EngineError("read_only")
+        w.update()
+        return [-1] * self.doc.page_count  # one field may be shown on several pages
+
+    def _op_field(self, pno, rect, kind, name, opts):
+        for p in range(self.doc.page_count):
+            for other in self.doc.load_page(p).widgets():
+                if other.field_name == name:
+                    raise EngineError("name_taken")
+        page = self.doc.load_page(pno)
+        w = pymupdf.Widget()
+        w.field_name = name
+        w.rect = Rect(rect) * page.derotation_matrix
+        w.border_color, w.border_width = (.45, .45, .45), 0.8
+        if kind == "text":
+            w.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+            if opts.get("multiline"):
+                w.field_flags = pymupdf.PDF_TX_FIELD_IS_MULTILINE
+            w.text_fontsize = 0
+        elif kind == "check":
+            w.field_type, w.field_value = pymupdf.PDF_WIDGET_TYPE_CHECKBOX, False
+        elif kind in ("combo", "list"):
+            w.field_type = (pymupdf.PDF_WIDGET_TYPE_COMBOBOX if kind == "combo"
+                            else pymupdf.PDF_WIDGET_TYPE_LISTBOX)
+            w.choice_values = list(opts["choices"])
+            w.field_value = opts["choices"][0]
+            w.text_fontsize = 11
+        elif kind == "sign":
+            w.field_type = pymupdf.PDF_WIDGET_TYPE_SIGNATURE
+        else:
+            raise EngineError("bad_op")
+        page.add_widget(w)
+        if page.rotation:
+            self.doc.xref_set_key(w.xref, "MK/R", str(page.rotation))
+            w.update()
+        return self._same(pno)
+
+    def _op_field_del(self, pno, index):
+        page = self.doc.load_page(pno)
+        w = self._widget(page, index)
+        self._gone_fields.add(w.xref)
+        self._dropped = True
+        page.delete_widget(w)
+        return self._same(pno)
+
+    # -- content -----------------------------------------------------------
+    def lines(self, pno):
+        """Editable text lines: what a click in text-edit mode can change."""
+        page = self.doc.load_page(pno)
+        out = []
+        for ln in self._raw_lines(page):
+            s = ln["spans"][0]
+            text = self._line_text(ln)
+            if not text.strip():
+                continue
+            c = s["color"]
+            out.append({"index": ln["n"], "text": text,
+                        "rect": tuple(Rect(ln["bbox"]) * page.rotation_matrix),
+                        "size": s["size"], "font": s["font"],
+                        "color": ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255),
+                        "bold": bool(s["flags"] & 16) or "bold" in s["font"].lower(),
+                        "italic": bool(s["flags"] & 2), "serif": bool(s["flags"] & 4),
+                        "mono": bool(s["flags"] & 8)})
+        return out
+
+    def _raw_lines(self, page):
+        out = []
+        raw = page.get_text("rawdict", flags=self._flags(page))
+        for block in raw["blocks"]:
+            for ln in block.get("lines", ()):
+                if ln["spans"]:
+                    ln["n"] = len(out)
+                    out.append(ln)
+        return out
+
+    @staticmethod
+    def _line_text(ln):
+        out = []
+        for s in ln["spans"]:
+            old = legacy.is_legacy(s["font"])
+            out += [plain_char(c["c"], old) for c in s["chars"]]
+        return "".join(out)
+
+    @staticmethod
+    def _count(page):
+        """Visible characters, counted the same way before and after an edit."""
+        raw = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE
+                            | pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE)
+        return sum(1 for b in raw["blocks"] for ln in b.get("lines", ())
+                   for s in ln["spans"] for c in s["chars"] if not c["c"].isspace())
+
+    def _op_replace(self, pno, index, old, new, style):
+        page = self.doc.load_page(pno)
+        found = self._raw_lines(page)
+        if index >= len(found) or self._line_text(found[index]) != old:
+            raise EngineError("stale")
+        ln = found[index]
+        turn = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}.get(
+            (round(ln["dir"][0], 2), round(ln["dir"][1], 2)))
+        if turn is None:
+            raise EngineError("slanted")
+        chars = [c for s in ln["spans"] for c in s["chars"]]
+        first = ln["spans"][0]
+        own = sum(1 for c in chars if not c["c"].isspace())
+        strips = self._line_strips(pno, chars, turn, own)
+        if strips is None:
+            raise EngineError("replace_collateral")
+        page = self._remove_strips(self.doc, pno, strips)
+        if new.strip():
+            kind = _Type(page, new, serif=style["serif"], mono=style["mono"],
+                         bold=style["bold"], italic=style["italic"])
+            size = style["size"]
+            at = Point(chars[0]["origin"])
+            room = {0: page.cropbox.width - at.x, 180: at.x,
+                    90: at.y, 270: page.cropbox.height - at.y}[turn] - 6
+            while kind.width(new, size) > room and size > first["size"] * .6:
+                size -= .25
+            kind.put(at * page.rotation_matrix, new, size, style["color"], rotate=turn)
+        return self._same(pno)
+
+    @staticmethod
+    def _remove_strips(doc, pno, strips):
+        page = doc.load_page(pno)
+        for r in strips:
+            page.add_redact_annot(r, fill=False, cross_out=False)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                              graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                              text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+        page = None
+        return doc.load_page(pno)
+
+    def _line_strips(self, pno, chars, turn, own):
+        """Strips that remove exactly these characters, found by trying on a copy.
+
+        The full boxes would touch neighbouring lines; too thin strips miss odd glyphs.
+        """
+        for along, across in ((.3, .08), (.15, .15), (.3, .25), (.05, .3), (.45, .02)):
+            strips = []
+            for c in chars:
+                r = Rect(c["bbox"])
+                if turn in (0, 180):
+                    mid, half = (r.y0 + r.y1) / 2, max(r.height * across, .05)
+                    a, b = r.x0 + r.width * along, r.x1 - r.width * along
+                    if b - a < .05:
+                        a, b = (a + b) / 2 - .05, (a + b) / 2 + .05
+                    strips.append(Rect(a, mid - half, b, mid + half))
+                else:
+                    mid, half = (r.x0 + r.x1) / 2, max(r.width * across, .05)
+                    a, b = r.y0 + r.height * along, r.y1 - r.height * along
+                    if b - a < .05:
+                        a, b = (a + b) / 2 - .05, (a + b) / 2 + .05
+                    strips.append(Rect(mid - half, a, mid + half, b))
+            trial = pymupdf.open()
+            src = self._snapshot()
+            trial.insert_pdf(src, from_page=pno, to_page=pno, links=0, annots=1, widgets=1)
+            try:
+                base = self._glyphs(trial.load_page(0))
+                after = self._glyphs(self._remove_strips(trial, 0, strips))
+                if len(after) == len(base) - own and not self._moved(base, after):
+                    return strips
+            finally:
+                trial.close()
+                src.close()
+        return None
+
+    def _op_text(self, pno, rect, text, style):
+        page = self.doc.load_page(pno)
+        color = "#%02x%02x%02x" % tuple(round(c * 255) for c in style["color"])
+        body = html.escape(text).replace("\n", "<br>")
+        if style.get("bold"):
+            body = f"<b>{body}</b>"
+        css = (f"* {{font-family: sans-serif; font-size: {style['size']:g}px; color: {color}; "
+               f"text-align: {style.get('align', 'left')}; line-height: 1.25;}}")
+        spare, _ = page.insert_htmlbox(Rect(rect) * page.derotation_matrix, body, css=css,
+                                       rotate=page.rotation)
+        if spare < 0:
+            raise EngineError("no_room")
+        return self._same(pno)
+
+    def _op_image(self, pno, rect, path):
+        page = self.doc.load_page(pno)
+        try:
+            page.insert_image(Rect(rect) * page.derotation_matrix, filename=path,
+                              rotate=page.rotation, keep_proportion=True)
+        except Exception:
+            raise EngineError("bad_image")
+        return self._same(pno)
+
+    def _op_watermark(self, pages, text, o):
+        for pno in pages:
+            page = self.doc.load_page(pno)
+            kind = _Type(page, text, bold=o.get("bold", False))
+            size = o["size"]
+            w = kind.width(text, size)
+            limit = math.hypot(page.rect.width, page.rect.height) * .8
+            if w > limit:
+                size *= limit / w
+                w = limit
+            a = math.radians(o["angle"])
+            c = Point(page.rect.width / 2, page.rect.height / 2)
+            # baseline start, so that the text's middle lands on the page's middle
+            x = c.x - w / 2 * math.cos(a) + size * .3 * math.sin(a)
+            y = c.y + w / 2 * math.sin(a) + size * .3 * math.cos(a)
+            kind.put(Point(x, y), text, size, o["color"], o["angle"], o["opacity"],
+                     overlay=o.get("over", True))
+        return self._same(*pages)
+
+    def _op_header(self, pages, o):
+        total = self.doc.page_count
+        for k, pno in enumerate(pages):
+            page = self.doc.load_page(pno)
+            for place, raw in o["texts"].items():
+                if not raw:
+                    continue
+                bates = f"{o.get('prefix', '')}{o.get('start', 1) + k:0{o.get('digits', 6)}d}"
+                text = (raw.replace("{n}", str(o.get("first", 1) + k)).replace("{N}", str(total))
+                        .replace("{date}", o.get("date", "")).replace("{bates}", bates))
+                kind = _Type(page, text)
+                size, margin = o["size"], o["margin"]
+                w = kind.width(text, size)
+                side = place[1]
+                x = {"l": margin, "c": (page.rect.width - w) / 2,
+                     "r": page.rect.width - margin - w}[side]
+                y = margin if place[0] == "t" else page.rect.height - margin + size * .6
+                kind.put(Point(x, y), text, size, o["color"])
+        return self._same(*pages)
+
+    def _op_background(self, pages, color):
+        for pno in pages:
+            page = self.doc.load_page(pno)
+            page.draw_rect(page.rect * page.derotation_matrix, color=None, fill=color,
+                           overlay=False)
+        return self._same(*pages)
+
+    # -- redaction ---------------------------------------------------------
+    @staticmethod
+    def _glyphs(page):
+        """[(char, unrotated box), ...] of everything visible, read the same way every time."""
+        raw = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE
+                            | pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE)
+        return [(c["c"], Rect(c["bbox"])) for b in raw["blocks"] for ln in b.get("lines", ())
+                for s in ln["spans"] for c in s["chars"] if not c["c"].isspace()]
+
+    @staticmethod
+    def _moved(before, after) -> int:
+        """Characters that are somewhere else than before: rewriting a page can shift text."""
+        grid: dict = {}
+        for c, r in before:
+            grid.setdefault((c, int(r.x0), int(r.y0)), []).append((r.x0, r.y0))
+        bad = 0
+        for c, r in after:
+            x, y = int(r.x0), int(r.y0)
+            for key in ((c, x + i, y + j) for i in (0, -1, 1) for j in (0, -1, 1)):
+                spot = next((p for p in grid.get(key, ())
+                             if abs(p[0] - r.x0) < .8 and abs(p[1] - r.y0) < .8), None)
+                if spot:
+                    grid[key].remove(spot)
+                    break
+            else:
+                bad += 1
+        return bad
+
+    @staticmethod
+    def _inside(r, areas):
+        mid = Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+        for a in areas:
+            part = r & a
+            if a.contains(mid) or (not part.is_empty and r.get_area()
+                                   and part.get_area() > .4 * r.get_area()):
+                return True
+        return False
+
+    @staticmethod
+    def _wipe(page, boxes, fill):
+        for r, color in boxes:
+            page.add_redact_annot(r, fill=color, cross_out=False)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
+                              graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+                              text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+
+    def _wipe_plan(self, pno, areas, fill):
+        """Boxes that really remove the text and move nothing else, tried on a copy; or None."""
+        before = self._glyphs(self.doc.load_page(pno))
+        doomed = [r for _, r in before if self._inside(r, areas)]
+        main = [(a, fill) for a in areas]
+        wide = [(r + (-.2, 0, .2, 0), False) for r in doomed]
+        narrow = [(Rect(r.x0 + r.width * .2, r.y0 + r.height * .3,
+                        r.x1 - r.width * .2, r.y1 - r.height * .3), False) for r in doomed]
+        for plan in (main, main + [b for b in narrow if not b[0].is_empty], main + wide):
+            src = self._snapshot()
+            trial = pymupdf.open()
+            try:
+                trial.insert_pdf(src, from_page=pno, to_page=pno, links=0, annots=0, widgets=0)
+                # comments and fields are handled on their own and not part of the text
+                base = self._glyphs(trial.load_page(0))
+                self._wipe(trial.load_page(0), plan, fill)
+                after = self._glyphs(trial.load_page(0))
+            finally:
+                trial.close()
+                src.close()
+            gone = len([1 for _, r in base if self._inside(r, areas)])
+            if any(self._inside(r, areas) for _, r in after) or self._moved(base, after):
+                continue
+            extra = len(base) - len(after) - gone
+            if 0 <= extra <= 2 * len(areas):
+                return plan
+        return None
+
+    def _as_picture(self, pno, areas, fill):
+        """The page becomes an image, and the text that stays is laid over it invisibly.
+
+        Needed whenever text follows a removed word on its line: MuPDF 1.28.6 then shifts the
+        rest of the line by one letter, under the black box or away from where it belongs.
+        """
+        page = self.doc.load_page(pno)
+        shown = [Rect(a) * page.rotation_matrix for a in areas]
+        keep = []
+        for ln in self.chars(pno):
+            part = []
+            for c in ln:
+                if c[4] == "�" or self._inside(Rect(c[:4]), shown):
+                    if part:
+                        keep.append(part)
+                    part = []
+                else:
+                    part.append(c)
+            if part:
+                keep.append(part)
+        words = [w for w in _words(keep) if w[4].strip()]
+        w, h = page.rect.width, page.rect.height
+        dpi = int(min(250.0, 72 * math.sqrt(30_000_000 / (w * h))))
+        pix = page.get_pixmap(dpi=dpi, annots=False, alpha=False)
+        k = dpi / 72
+        color = tuple(round(c * 255) for c in fill)
+        for a in areas:
+            r = a * page.rotation_matrix
+            pix.set_rect((Rect(r) * Matrix(k, k) + (-1, -1, 1, 1)).irect & pix.irect, color)
+        for ln in page.get_links():
+            if any(not (Rect(ln["from"]) * page.derotation_matrix & a).is_empty for a in areas):
+                page.delete_link(ln)
+        for key in ("Contents", "Resources", "Group"):
+            self.doc.xref_set_key(page.xref, key, "null")
+        page = None
+        page = self.doc.load_page(pno)
+        data = min((pix.tobytes("png"), pix.tobytes("jpeg", jpg_quality=90)), key=len)
+        page.insert_image(page.rect * page.derotation_matrix, stream=data, rotate=page.rotation)
+        page = None
+        if words:
+            self._op_textlayer({pno: words})
+        self._notes.append(("picture", pno))
+
+    def _op_redact(self, marks, o):
+        for pno, rects in marks.items():
+            page = self.doc.load_page(pno)
+            m = page.derotation_matrix
+            areas = [(Rect(r) * m).normalize() for r in rects]
+
+            def hit(r):
+                return any(not (Rect(r) & a).is_empty for a in areas)
+            self._delete_under(page, hit)
+            page = None
+            plan = self._wipe_plan(pno, areas, o["fill"])
+            if plan is None:
+                self._as_picture(pno, areas, o["fill"])
+            else:
+                self._wipe(self.doc.load_page(pno), plan, o["fill"])
+            page = self.doc.load_page(pno)
+            shown = [r for c, r in self._glyphs(page)]
+            fields = [w.rect for w in page.widgets()]
+            if any(self._inside(r, areas) and not any(f.intersects(r) for f in fields)
+                   for r in shown):
+                raise EngineError("redact_failed")
+            # private copies of the page that editors and viewers keep
+            for key in ("Thumb", "PieceInfo"):
+                self.doc.xref_set_key(page.xref, key, "null")
+        self._drop_tags()  # whole: an element without a page may quote the redacted text
+        cat = self.doc.pdf_catalog()
+        if self.doc.xref_get_key(cat, "PieceInfo")[0] != "null":
+            self.doc.xref_set_key(cat, "PieceInfo", "null")
+        self._dropped = True
+        return self._same(*marks)
+
+    def _delete_under(self, page, hit):
+        for a in list(page.annots()):
+            if hit(a.rect):
+                page.delete_annot(a)
+        for w in list(page.widgets()):
+            if hit(w.rect):
+                self._gone_fields.add(w.xref)
+                page.delete_widget(w)
+
+    def mentions(self, text):
+        """Where else a word appears: places redaction of pages does not reach."""
+        low = text.lower()
+        out = []
+        for k, v in (self.doc.metadata or {}).items():
+            if v and low in str(v).lower():
+                out.append("თვისებები: " + k)
+        xml = self.doc.get_xml_metadata() or ""
+        if low in xml.lower():
+            out.append("XMP მეტამონაცემები")
+        out += ["სანიშნე: " + t[1] for t in self.doc.get_toc() if low in t[1].lower()]
+        for pno, a in self.all_annots():
+            if low in a["text"].lower():
+                out.append(f"კომენტარი, გვ. {pno + 1}")
+        for pno in range(self.doc.page_count):
+            for w in self.doc.load_page(pno).widgets():
+                if low in str(w.field_value or "").lower():
+                    out.append(f"ფორმის ველი, გვ. {pno + 1}")
+        if self.doc.embfile_count():
+            out.append("მიმაგრებული ფაილები (შიგთავსი არ შემოწმდა)")
+        return out
+
+    def _op_scrub(self, o):
+        # Document.scrub() stops at the first damaged cross-reference, which real files have.
+        doc = self.doc
+        if o.get("hidden"):
+            from pymupdf import utils  # noqa: F401 - the one part worth keeping
+            look = [doc.load_page(p).get_pixmap(dpi=50).samples for p in range(doc.page_count)]
+            doc.scrub(attached_files=False, embedded_files=False, javascript=False,
+                      metadata=False, xml_metadata=False, hidden_text=True, thumbnails=False,
+                      clean_pages=False, redactions=False, remove_links=False,
+                      reset_fields=False, reset_responses=False)
+            import numpy as np
+            for p, old in enumerate(look):  # removing invisible text must change nothing visible
+                new = doc.load_page(p).get_pixmap(dpi=50).samples
+                if len(new) != len(old) or (abs(
+                        np.frombuffer(new, np.uint8).astype(np.int16)
+                        - np.frombuffer(old, np.uint8)) > 60).mean() > .002:
+                    raise EngineError("scrub_changed")
+        if o.get("files", True):
+            self._drop_files()
+        if o.get("metadata", True):
+            doc.set_metadata({})
+            doc.del_xml_metadata()
+        for pno in range(doc.page_count):
+            x = doc.page_xref(pno)
+            if doc.xref_get_key(x, "Thumb")[0] != "null":
+                doc.xref_set_key(x, "Thumb", "null")
+        if o.get("metadata", True):
+            cat = self.doc.pdf_catalog()
+            for x in [cat] + [self.doc.page_xref(i) for i in range(self.doc.page_count)]:
+                for key in ("PieceInfo", "Metadata"):
+                    if self.doc.xref_get_key(x, key)[0] != "null":
+                        self.doc.xref_set_key(x, key, "null")
+        if o.get("javascript", True):
+            self._strip_javascript()
+            if self._strip_javascript():  # a second pass must find nothing
+                raise EngineError("scrub_failed")
+        if o.get("metadata", True):  # comment authors are personal data too
+            for pno in range(self.doc.page_count):
+                page = self.doc.load_page(pno)
+                for x in [a.xref for a in page.annots()]:
+                    self.doc.xref_set_key(x, "T", "null")
+        if o.get("comments"):
+            for pno in range(self.doc.page_count):
+                page = self.doc.load_page(pno)
+                for a in list(page.annots()):
+                    page.delete_annot(a)
+        self._dropped = True
+        return [-1] * self.doc.page_count
+
+    def _drop_files(self):
+        """Attached files: in the name tree, as page attachments, and as associated files."""
+        doc = self.doc
+        for pno in range(doc.page_count):
+            page = doc.load_page(pno)
+            for a in [a for a in page.annots() if a.type[1] == "FileAttachment"]:
+                page.delete_annot(a)
+            page = None
+        cat = doc.pdf_catalog()
+        names = doc.xref_get_key(cat, "Names")
+        if names[0] == "xref":
+            doc.xref_set_key(int(names[1].split()[0]), "EmbeddedFiles", "null")
+        elif names[0] == "dict":
+            doc.xref_set_key(cat, "Names/EmbeddedFiles", "null")
+        for key in ("Collection", "AF"):
+            if doc.xref_get_key(cat, key)[0] != "null":
+                doc.xref_set_key(cat, key, "null")
+        for x in range(1, doc.xref_length()):
+            try:
+                if doc.xref_get_key(x, "Type")[1] in ("/Filespec", "/F", "/EmbeddedFile"):
+                    if doc.xref_get_key(x, "Type")[1] == "/EmbeddedFile" or \
+                            doc.xref_get_key(x, "EF")[0] != "null":
+                        doc.update_object(x, "<<>>")
+                        if doc.xref_is_stream(x):
+                            doc.update_stream(x, b" ")
+            except Exception:  # a damaged slot
+                continue
+
+    def _strip_javascript(self) -> int:
+        """Remove every action that runs something: JavaScript (inline too), javascript: links,
+        program launches, and XFA forms. Returns how many were found."""
+        mu = pymupdf.mupdf
+        pdf = mu.pdf_document_from_fz_document(self.doc)
+        found = 0
+
+        def runs(o):
+            if not mu.pdf_is_dict(o):
+                return False
+            kind = mu.pdf_to_name(mu.pdf_dict_gets(o, "S"))
+            if kind in ("JavaScript", "Launch") or mu.pdf_dict_gets(o, "JS").m_internal:
+                return True
+            if kind == "URI":
+                uri = mu.pdf_to_text_string(mu.pdf_dict_gets(o, "URI")) or ""
+                return "".join(uri.split()).lower().startswith(("javascript:", "vbscript:"))
+            return False
+
+        def clean(top):
+            nonlocal found
+            todo = [top]  # no recursion: hostile files nest thousands of levels
+            while todo:
+                o = todo.pop()
+                if mu.pdf_is_dict(o):
+                    drop = []
+                    for i in range(mu.pdf_dict_len(o)):
+                        key = mu.pdf_to_name(mu.pdf_dict_get_key(o, i))
+                        val = mu.pdf_dict_get_val(o, i)
+                        if key in ("JavaScript", "JS", "XFA") or runs(val):
+                            drop.append(key)
+                        elif not mu.pdf_is_indirect(val):
+                            todo.append(val)
+                    for key in drop:
+                        found += 1
+                        mu.pdf_dict_dels(o, key)
+                elif mu.pdf_is_array(o):
+                    for i in reversed(range(mu.pdf_array_len(o))):
+                        val = mu.pdf_array_get(o, i)
+                        if runs(val):
+                            found += 1
+                            mu.pdf_array_delete(o, i)
+                        elif not mu.pdf_is_indirect(val):
+                            todo.append(val)
+        scripts = []
+        for x in range(1, self.doc.xref_length()):
+            try:
+                o = mu.pdf_load_object(pdf, x)
+            except Exception:  # a freed slot
+                continue
+            if runs(o):
+                scripts.append(x)
+            else:
+                clean(o)
+        for x in scripts:
+            found += 1
+            self.doc.update_object(x, "<<>>")
+        return found
+
+    # -- security and size -------------------------------------------------
+    def _op_protect(self, o):
+        if self._protected:
+            level = self.doc.authenticate(o.get("auth", ""))
+            if not level & 4:
+                raise EngineError("owner_needed")
+        if o["mode"] == "set" and not (o.get("user") or o.get("owner")):
+            raise EngineError("bad_op")
+        self._security = dict(o)
+        return self._same()
+
+    def _save_kw(self):
+        """(keyword arguments for save, password that opens the result, must be protected)"""
+        o = self._security
+        if o is None:
+            return {"encryption": pymupdf.PDF_ENCRYPT_KEEP}, self._password, self._protected
+        if o["mode"] == "none":
+            return {"encryption": pymupdf.PDF_ENCRYPT_NONE}, "", False
+        perm = pymupdf.PDF_PERM_ACCESSIBILITY
+        for key, bits in (("print", pymupdf.PDF_PERM_PRINT | pymupdf.PDF_PERM_PRINT_HQ),
+                          ("copy", pymupdf.PDF_PERM_COPY),
+                          ("modify", pymupdf.PDF_PERM_MODIFY | pymupdf.PDF_PERM_ASSEMBLE),
+                          ("annotate", pymupdf.PDF_PERM_ANNOTATE | pymupdf.PDF_PERM_FORM)):
+            if o["perms"].get(key):
+                perm |= bits
+        user, owner = o.get("user") or "", o.get("owner") or o.get("user")
+        return {"encryption": pymupdf.PDF_ENCRYPT_AES_256, "user_pw": user, "owner_pw": owner,
+                "permissions": int(perm)}, user, True
+
+    def _op_compress(self, o):
+        self.doc.rewrite_images(dpi_threshold=o["dpi"] + 20, dpi_target=o["dpi"],
+                                quality=o["quality"], set_to_gray=o.get("gray", False))
+        try:
+            self.doc.subset_fonts()
+        except Exception:  # optional gain only
+            pass
+        return [-1] * self.doc.page_count
+
+    # -- OCR ---------------------------------------------------------------
+    def ocr_words(self, pno, languages, force=False):
+        """Recognised words of a page as displayed; None when it already has text."""
+        page = self.doc.load_page(pno)
+        if not force and self._count(page) > 15:
+            return None
+        for lang in languages.split("+"):
+            if not os.path.exists(os.path.join(TESSDATA, lang + ".traineddata")):
+                raise EngineError("no_language")
+        w, h = page.rect.width, page.rect.height
+        dpi = min(300.0, 72 * math.sqrt(OCR_MAX_PIXELS / (w * h)))
+        pix = page.get_pixmap(dpi=int(dpi), colorspace=pymupdf.csGRAY)
+        tmp = pymupdf.open()
+        scan = tmp.new_page(width=w, height=h)
+        scan.insert_image(scan.rect, pixmap=pix)
+        tp = scan.get_textpage_ocr(language=languages, dpi=int(dpi), full=True, tessdata=TESSDATA)
+        words = _ocr_words(scan.get_text("rawdict", textpage=tp))
+        tmp.close()
+        return words
+
+    def _op_textlayer(self, pages):
+        """Write recognised words as invisible text."""
+        for pno, words in pages.items():
+            if not words:
+                continue
+            page = self.doc.load_page(pno)
+            kind = _Type(page, "".join(sorted({c for w in words for c in w[4]})) + " ")
+            shape = page.new_shape()
+            for x0, y0, x1, y1, word in words:
+                unit = kind.width(word, 1) or 1
+                size = min(max((x1 - x0) / unit, 1.0), (y1 - y0) * 1.6 + 1)
+                kind.put(Point(x0, y1 - (y1 - y0) * .22), word + " ", size, mode=3, to=shape)
+            shape.commit()
+        return self._same(*pages)
+
+    # -- compare -----------------------------------------------------------
+    def compare(self, path, password=""):
+        """Differences between this document (new) and another file (old)."""
+        other = Features()
+        other.open(path, password)
+
+        def stream(eng):
+            out = []
+            for p in range(eng.doc.page_count):
+                out += [(w[4], p, w[:4]) for w in _words(eng.chars(p))]
+            return out
+        a, b = stream(other), stream(self)
+        changes = []
+
+        def add(i1, i2, j1, j2, tag):
+            changes.append({"kind": tag,
+                            "old": " ".join(w[0] for w in a[i1:i2]),
+                            "new": " ".join(w[0] for w in b[j1:j2]),
+                            "old_at": [(w[1], w[2]) for w in a[i1:i2]],
+                            "new_at": [(w[1], w[2]) for w in b[j1:j2]],
+                            "page": b[min(j1, len(b) - 1)][1] if b else 0})
+        # Equal prefix and suffix are cheap to drop and usually most of the text.
+        lo = 0
+        while lo < min(len(a), len(b)) and a[lo][0] == b[lo][0]:
+            lo += 1
+        ha, hb = len(a), len(b)
+        while ha > lo and hb > lo and a[ha - 1][0] == b[hb - 1][0]:
+            ha, hb = ha - 1, hb - 1
+        sm = difflib.SequenceMatcher(None, [w[0] for w in a[lo:ha]], [w[0] for w in b[lo:hb]],
+                                     autojunk=(ha - lo) * (hb - lo) > 25_000_000)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag != "equal":
+                add(lo + i1, lo + i2, lo + j1, lo + j2, tag)
+        touched = {p for c in changes for p, _ in c["new_at"]}
+        pictures = []
+        for p in range(min(other.doc.page_count, self.doc.page_count)):
+            if p in touched:
+                continue
+            x, y = (e.doc.load_page(p).get_pixmap(dpi=60, colorspace=pymupdf.csGRAY)
+                    for e in (other, self))
+            if (x.width, x.height) != (y.width, y.height):
+                pictures.append(p)
+            elif x.samples != y.samples:
+                import numpy as np
+                diff = int((abs(np.frombuffer(x.samples, np.uint8).astype(np.int16)
+                                - np.frombuffer(y.samples, np.uint8)) > 70).sum())
+                if diff > 12:
+                    pictures.append(p)
+        counts = (other.doc.page_count, self.doc.page_count)
+        other.close()
+        return {"changes": changes, "pictures": pictures, "pages": counts}
+
+    def pdf_box(self, pno, rect):
+        """Displayed rectangle -> PDF user space, for signature fields."""
+        page = self.doc.load_page(pno)
+        a, b = _to_pdf(page, rect[:2]), _to_pdf(page, rect[2:])
+        return (min(a.x, b.x), min(a.y, b.y), max(a.x, b.x), max(a.y, b.y))
+
+    # -- text for the assistant ---------------------------------------------
+    def page_texts(self, first=0, last=None):
+        last = self.doc.page_count if last is None else last
+        return ["\n".join("".join(c[4] for c in ln) for ln in self.chars(p))
+                for p in range(first, last)]
+
+    # -- archive format ----------------------------------------------------
+    def pdfa(self, out):
+        """Save a PDF/A-2b *candidate*. Returns the problems that rule it out."""
+        doc = self._snapshot()
+        bad = set()
+        for p in range(doc.page_count):
+            for font in doc.get_page_fonts(p, full=True):
+                if font[2] == "Type3":
+                    continue
+                if font[1] in ("n/a", ""):
+                    bad.add(font[3])
+        problems = [f"ფონტი ჩაშენებული არ არის: {f}" for f in sorted(bad)]
+        if doc.embfile_count():
+            problems.append("ფაილს აქვს მიმაგრებული ფაილები")
+        if problems:
+            doc.close()
+            return problems
+        helper = Features()
+        helper.doc = doc
+        helper._drop_files()
+        helper._strip_javascript()
+        from PIL import ImageCms
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        x = doc.get_new_xref()
+        doc.update_object(x, "<</N 3>>")
+        doc.update_stream(x, icc)
+        cat = doc.pdf_catalog()
+        doc.xref_set_key(cat, "OutputIntents",
+                         f"[<</Type/OutputIntent/S/GTS_PDFA1/OutputConditionIdentifier(sRGB)"
+                         f"/Info(sRGB IEC61966-2.1)/DestOutputProfile {x} 0 R>>]")
+        doc.xref_set_key(cat, "AA", "null")
+        doc.xref_set_key(cat, "OpenAction", "null")
+        title = html.escape((doc.metadata or {}).get("title") or "")
+        doc.set_xml_metadata(
+            '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+            'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" '
+            'xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/"><pdfaid:part>2</pdfaid:part>'
+            '<pdfaid:conformance>B</pdfaid:conformance><dc:title><rdf:Alt><rdf:li '
+            f'xml:lang="x-default">{title}</rdf:li></rdf:Alt></dc:title></rdf:Description>'
+            '</rdf:RDF></x:xmpmeta><?xpacket end="w"?>')
+        doc.set_metadata({"title": (doc.metadata or {}).get("title") or ""})
+        for p in range(doc.page_count):  # every annotation must print
+            for a in doc.load_page(p).annots():
+                if a.type[1] != "Popup":
+                    a.set_flags((a.flags | 4) & ~(2 | 32))
+        from .engine import _write
+        if self._dropped:
+            self._sweep(doc, self._gone_fields)
+        _write(doc, out, "", False, encryption=pymupdf.PDF_ENCRYPT_NONE)
+        doc.close()
+        return []
+
+
+__all__ = ["Features", "_open_source", "_words"]
