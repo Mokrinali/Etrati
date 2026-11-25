@@ -13,6 +13,7 @@ PDF-ის სანახავი და რედაქტირების 
 - **კომენტარები და ფორმები:** მარკერი, შენიშვნა, ხატვა, შტამპი, ფორმის შევსება და შექმნა, ხელმოწერის სურათი
 - **შიგთავსი:** სტრიქონის შეცვლა, ტექსტი, სურათი, წყლის ნიშანი, კოლონტიტული, Bates ნუმერაცია
 - **OCR:** ქართული, ინგლისური, რუსული
+- **სკანის გასუფთავება:** ფოტო, სქრინშოტი ან სურათოვანი PDF → გასწორებული, სუფთა და ძებნადი PDF (HEIC-იც)
 - **კონვერტაცია:** Word, Excel, PowerPoint, HTML, სურათი და ტექსტი → PDF; PDF → Word, Excel, PowerPoint, HTML, ტექსტი, სურათი
 - **უსაფრთხოება:** ტექსტის სამუდამო წაშლა (redaction), ფარული მონაცემების წაშლა, AES-256, სერტიფიკატით ხელმოწერა და შემოწმება
 - **სხვა:** ორი ვერსიის შედარება, ფაილის შემცირება, სერიული დამუშავება, AI ასისტენტი (სურვილისამებრ, საკუთარი Anthropic API გასაღებით)
@@ -29,7 +30,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 powershell -File scripts\get_tessdata.ps1    # OCR-ის ენები, დაახლოებით 35 მბ
 .\.venv\Scripts\pythonw.exe etrati.pyw
-powershell -File scriptsegister_pdf.ps1    # სურვილისამებრ: PDF-ის გახსნა ETRATI-ით
+powershell -File scripts\register_pdf.ps1    # სურვილისამებრ: PDF-ის გახსნა ETRATI-ით
 ```
 
 Office ფაილების გარდაქმნას დაყენებული Microsoft Office სჭირდება, HTML-ისას კი Microsoft Edge.
@@ -45,6 +46,8 @@ Office ფაილების გარდაქმნას დაყენ�
 
 - ტექსტის შეცვლა სტრიქონობრივია, აბზაცი თავიდან არ გადაეწყობა.
 - რთული Word/Excel ექსპორტი გადახედვას ითხოვს.
+- სკანის გასუფთავება: ღია მაგიდაზე დადებული თეთრი ფურცლის კუთხეები ხშირად ხელით სწორდება; ბუნდოვან
+  და წვრილ ტექსტზე ამოცნობა სუსტია. ციფრები გადაამოწმეთ.
 - ფორმის JavaScript გამოთვლები არ სრულდება.
 - PDF/A ექსპორტი ოფიციალური შემმოწმებლით არ მოწმდება; ხელმოწერისას სერტიფიკატის გაუქმება არ მოწმდება.
 
@@ -57,5 +60,6 @@ Office ფაილების გარდაქმნას დაყენ�
 ## მესამე მხარის კომპონენტები
 
 PyMuPDF / MuPDF (AGPL-3.0), Qt for Python (LGPL-3.0), Tesseract language data (Apache-2.0), pdf2docx (MIT),
-python-docx (MIT), openpyxl (MIT), python-pptx (MIT), pyHanko (MIT), Pillow (MIT-CMU), fontTools (MIT),
+python-docx (MIT), openpyxl (MIT), python-pptx (MIT), pyHanko (MIT), Pillow (MIT-CMU), pillow-heif (BSD; შეიცავს libheif-ს, LGPL-3.0),
+OpenCV (Apache-2.0), fontTools (MIT),
 lxml (BSD), Anthropic SDK (MIT). პროგრამის კოდის შიდა პაკეტს ისტორიულად `furceli` ჰქვია.

@@ -17,6 +17,7 @@ from .batch import BatchDialog
 from .client import EngineClient, TaskError, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
+from .scan_dialog import ScanDialog
 from .docview import DocView
 from .printing import PrintError, choose_and_print
 
@@ -208,6 +209,8 @@ class MainWindow(QMainWindow):
         self.a_compare = act("შედარება სხვა ვერსიასთან…", d(lambda x: x.compare_with()))
         self.a_create = act("PDF სხვა ფაილებისგან…", self.create_pdf, "Ctrl+N", 0xE8A5,
                             needs_doc=False)
+        self.a_scan = act("სკანის გასუფთავება…", self.scan, "Ctrl+Shift+N", 0xE8FE,
+                          needs_doc=False)
         self.a_batch = act("სერიული დამუშავება…", lambda: BatchDialog(self).exec(),
                            needs_doc=False)
         self.a_exports = [act(t + "…", d(lambda x, k=k: x.export_as(k))) for k, t in (
@@ -269,6 +272,18 @@ class MainWindow(QMainWindow):
             doc.splitter.setStretchFactor(1, 1)
         if getattr(doc, "ai", None) is not None:
             doc.ai.setVisible(on)
+
+    def scan(self):
+        doc = self.doc
+        paths = []
+        if doc and doc.loaded and not doc._busy and not doc.dirty:
+            lines = doc._quiet("chars", doc.view.page)
+            if lines is not None and sum(map(len, lines)) < 15:  # the open file is a scan itself
+                paths = [doc.path]
+        dlg = ScanDialog(self, paths)
+        if dlg.exec() and dlg.result_path:
+            self.statusBar().showMessage(f"შეიქმნა; ამოცნობილია {dlg.words} სიტყვა", 8000)
+            self.open_file(dlg.result_path)
 
     def create_pdf(self):
         kinds = " ".join(f"*{e}" for e in sorted(SUPPORTED))
@@ -374,7 +389,7 @@ class MainWindow(QMainWindow):
         self.recent_menu = f.addMenu("ბოლოს გახსნილი")
         f.addActions([self.a_save, self.a_save_as])
         f.addSeparator()
-        f.addActions([self.a_create, self.a_merge, self.a_split, self.a_batch])
+        f.addActions([self.a_create, self.a_scan, self.a_merge, self.a_split, self.a_batch])
         ex = f.addMenu("ექსპორტი")
         ex.addActions(self.a_exports + [self.a_img, self.a_pdfa])
         f.addAction(self.a_compress)
@@ -411,7 +426,7 @@ class MainWindow(QMainWindow):
         z.addSeparator()
         z.addActions([self.a_sign, self.a_signbox, self.a_verify])
         t = mb.addMenu("ხელსაწყოები")
-        t.addActions([self.a_compare, self.a_ai])
+        t.addActions([self.a_scan, self.a_compare, self.a_ai])
         v = mb.addMenu("ხედი")
         v.addActions([self.a_in, self.a_out, self.a_100, self.a_width, self.a_page])
         v.addSeparator()
@@ -484,6 +499,9 @@ class MainWindow(QMainWindow):
         btn3 = QPushButton("PDF სხვა ფაილებისგან…")
         btn3.setMinimumHeight(38)
         btn3.clicked.connect(self.create_pdf)
+        btn4 = QPushButton("ფოტოს ან სკანის გასუფთავება…")
+        btn4.setMinimumHeight(38)
+        btn4.clicked.connect(lambda *_: self.scan())
         btn2 = QPushButton("ფაილების გაერთიანება…")
         btn2.setMinimumHeight(38)
         btn2.clicked.connect(self.merge)
@@ -492,7 +510,7 @@ class MainWindow(QMainWindow):
         self.recent_list.setFixedSize(560, 260)
         self.recent_list.itemActivated.connect(
             lambda it: self.open_file(it.data(Qt.ItemDataRole.UserRole)))
-        for x in (title, hint, btn, btn3, btn2, self.recent_label, self.recent_list):
+        for x in (title, hint, btn, btn3, btn4, btn2, self.recent_label, self.recent_list):
             lay.addWidget(x)
             lay.addSpacing(6)
         return w

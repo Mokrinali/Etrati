@@ -19,7 +19,7 @@ TIMEOUT = 60.0
 LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
         "apply": 300.0, "open": 120.0, "make_pdf": 900.0, "export_as": 1800.0,
         "to_images": 900.0, "compare": 600.0, "ocr_words": 300.0, "sign": 120.0, "pdfa": 900.0,
-        "all_annots": 300.0, "page_texts": 300.0, "mentions": 300.0}
+        "all_annots": 300.0, "scan_build": 300.0, "scan_analyse": 180.0, "scan_join": 600.0, "page_texts": 300.0, "mentions": 300.0}
 MAX_RESTARTS = 5             # in a row, without a single success between them
 ALWAYS_TRY = {"save", "export", "replay", "open", "pdfa"}  # the user's work depends on these
 

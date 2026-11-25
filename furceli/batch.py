@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
@@ -10,8 +11,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBox
 
 from . import files
 from .client import EngineClient, TaskError, run_task
+from .convert_names import IMAGES
 from .dialogs import PDF_FILTER, error_text
 from .forms import CompressDialog, OcrDialog
+from .scan_dialog import MODES
 
 
 class BatchDialog(QDialog):
@@ -35,6 +38,9 @@ class BatchDialog(QDialog):
             row.addWidget(b)
         row.addStretch()
         lay.addLayout(row)
+        self.scan = QCheckBox("სკანის ან ფოტოს გასუფთავება:")
+        self.scan_mode = QComboBox()
+        self.scan_mode.addItems([m[0] for m in MODES])
         self.ocr = QCheckBox("ტექსტის ამოცნობა (OCR):")
         self.lang = QComboBox()
         self.lang.addItems([x[0] for x in OcrDialog.LANGS])
@@ -51,8 +57,8 @@ class BatchDialog(QDialog):
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.clean = QCheckBox("ფარული მონაცემების წაშლა")
-        for a, b in ((self.ocr, self.lang), (self.squeeze, self.level), (self.turn, self.angle),
-                     (self.mark, self.mark_text), (self.lock, self.password), (self.clean, None)):
+        for a, b in ((self.scan, self.scan_mode), (self.ocr, self.lang), (self.squeeze, self.level),
+                     (self.turn, self.angle), (self.mark, self.mark_text), (self.lock, self.password), (self.clean, None)):
             r = QHBoxLayout()
             r.addWidget(a)
             if b is not None:
@@ -74,7 +80,9 @@ class BatchDialog(QDialog):
         lay.addLayout(r)
 
     def add(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "ფაილები", "", PDF_FILTER)
+        kinds = " ".join("*" + e for e in sorted(IMAGES))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "ფაილები", "", f"PDF და სურათები (*.pdf {kinds});;{PDF_FILTER}")
         self.list.addItems(paths)
 
     def remove(self):
@@ -141,12 +149,46 @@ class BatchDialog(QDialog):
                 client.shutdown()
         bar.close()
 
+    def _cleaned(self, client, path, work):
+        """The file as a clean searchable PDF in the working folder."""
+        lang = OcrDialog.LANGS[self.lang.currentIndex()][1]
+        mode = MODES[self.scan_mode.currentIndex()][1]
+        info = run_task(client, "scan_count", (path, ""), "", None, allow=self._bar)
+        if info["text"]:  # nobody is there to ask: real text must not turn into a picture
+            raise TaskError("has_text")
+        n, parts = info["pages"], []
+        for i in range(n):
+            if self._bar.wasCanceled():
+                raise TaskError("cancelled")
+            self._bar.setLabelText(f"{os.path.basename(path)}: {i + 1} / {n}")
+            o = run_task(client, "scan_analyse", (path, i, "", lang), "", None, allow=self._bar)
+            part = os.path.join(work, f"{i}.pdf")
+            run_task(client, "scan_build", (path, i, dict(o, mode=mode, languages=lang), part), "",
+                     None, allow=self._bar)
+            parts.append(part)
+        out = os.path.join(work, "clean.pdf")
+        run_task(client, "scan_join", (parts, out), "", None, allow=self._bar)
+        return out
+
     def _one(self, client, path, folder, kind):
-        info = run_task(client, "open", (path, ""), "", None, allow=self._bar)
+        work, source = files.new_session(), path
+        try:
+            if self.scan.isChecked():
+                source = self._cleaned(client, path, work)
+            elif not path.lower().endswith(".pdf"):
+                source = os.path.join(work, "in.pdf")
+                run_task(client, "make_pdf", ([path], source), "", None, allow=self._bar)
+            self._finish(client, path, source, folder, kind)
+        finally:
+            client.shutdown()  # lets go of the working files
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _finish(self, client, path, source, folder, kind):
+        info = run_task(client, "open", (source, ""), "", None, allow=self._bar)
         if not info["can_modify"] or (kind != "pdf" and not info["can_copy"]):
             raise TaskError("not_allowed")
         n = len(info["sizes"])
-        if self.ocr.isChecked():
+        if self.ocr.isChecked() and not self.scan.isChecked():
             lang = OcrDialog.LANGS[self.lang.currentIndex()][1]
             layer = {}
             for p in range(n):

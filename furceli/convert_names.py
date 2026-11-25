@@ -1,5 +1,5 @@
 """File types that can become a PDF (kept apart: the window must not load converters)."""
-IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".jp2"}
+IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".jp2", ".heic", ".heif"}
 WORD = {".doc", ".docx", ".rtf", ".odt", ".docm"}
 EXCEL = {".xls", ".xlsx", ".xlsm", ".ods", ".csv"}
 SLIDES = {".ppt", ".pptx", ".pptm", ".odp"}

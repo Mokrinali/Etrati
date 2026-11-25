@@ -4,14 +4,15 @@ from __future__ import annotations
 import os
 import time
 
-from . import convert, signing
+from . import convert, scan, signing
 from .engine import EngineError
 from .features import Features
 
 QUERIES = {"render", "chars", "search", "links", "annots", "all_annots", "widgets", "lines",
            "ocr_words", "compare", "mentions", "page_texts", "pdf_box"}
 CHANGES = {"open", "replay", "apply", "save", "export", "pdfa"}
-NO_DOC = {"open", "replay", "inspect", "merge", "make_pdf", "sign", "verify", "make_certificate"}
+SCAN = {"scan_count", "scan_analyse", "scan_preview", "scan_build", "scan_join"}
+NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign", "verify", "make_certificate"}
 ALLOWED = QUERIES | CHANGES | NO_DOC | {"export_as", "to_images"}
 
 
@@ -20,6 +21,10 @@ def run(engine, op, args):
         raise EngineError("bad_op")
     if op not in NO_DOC and engine.doc is None:
         raise EngineError("not_open")
+    if op in SCAN:
+        return {"scan_count": scan.count_pages, "scan_analyse": scan.analyse,
+                "scan_preview": scan.preview, "scan_build": scan.build_page,
+                "scan_join": scan.join}[op](*args)
     if op == "make_pdf":
         return convert.make_pdf(*args)
     if op == "export_as":

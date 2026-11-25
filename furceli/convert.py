@@ -426,8 +426,9 @@ def _text(src, out):
 
 def _image(src, out):
     from PIL import Image, ImageOps
+    from .scan import _open_image
     doc = pymupdf.open()
-    with Image.open(src) as im:
+    with _open_image(src) as im:
         for k in range(getattr(im, "n_frames", 1)):
             im.seek(k)
             frame = ImageOps.exif_transpose(im)
