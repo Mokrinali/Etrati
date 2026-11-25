@@ -28,7 +28,8 @@ cd Etrati
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 powershell -File scripts\get_tessdata.ps1    # OCR-ის ენები, დაახლოებით 35 მბ
-.\.venv\Scripts\pythonw.exe -m furceli
+.\.venv\Scripts\pythonw.exe etrati.pyw
+powershell -File scriptsegister_pdf.ps1    # სურვილისამებრ: PDF-ის გახსნა ETRATI-ით
 ```
 
 Office ფაილების გარდაქმნას დაყენებული Microsoft Office სჭირდება, HTML-ისას კი Microsoft Edge.

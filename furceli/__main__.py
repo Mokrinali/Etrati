@@ -9,23 +9,35 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
-    from furceli import APP_ID, APP_NAME, files
-    from furceli.window import MainWindow
+    from furceli import APP_ID, APP_NAME, files, single
 
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     app = QApplication(sys.argv)
+    paths = [a for a in sys.argv[1:] if os.path.isfile(a)]
+    if single.hand_over(paths):
+        return 0  # the running window opens them as tabs
+
+    from furceli.window import MainWindow
+
     app.setApplicationName(APP_ID)
     app.setApplicationDisplayName(APP_NAME)
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "assets", "furceli.ico")))
     files.sweep_sessions()
     win = MainWindow()
+    receiver = single.Receiver(parent=win)
+
+    def take(new):
+        for p in new:
+            if os.path.isfile(p):
+                win.open_file(p)
+        single.bring_to_front(win)
+    receiver.arrived.connect(take)
     win.show()
-    for arg in sys.argv[1:]:
-        if os.path.isfile(arg):
-            win.open_file(arg)
+    for path in paths:
+        win.open_file(path)
     return app.exec()
 
 
