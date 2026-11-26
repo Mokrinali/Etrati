@@ -20,6 +20,7 @@ from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
 from .scan_dialog import ScanDialog
+from .banner import Banner
 from .swatches import ColorSwatches
 from .welcome import DropFrame, WelcomeScreen
 from .docview import DocView
@@ -77,7 +78,15 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._welcome())
         self.stack.addWidget(self.tabs)
-        self.setCentralWidget(self.stack)
+        # a strip over everything for news about the program itself (a newer version)
+        self.update_banner = Banner()
+        central = QWidget()
+        col = QVBoxLayout(central)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.update_banner)
+        col.addWidget(self.stack, 1)
+        self.setCentralWidget(central)
         self.drop_frame = DropFrame(self)
         self._actions()
         self._toolbar()
@@ -177,6 +186,8 @@ class MainWindow(QMainWindow):
         self.a_goto = self._act("გვერდზე გადასვლა", self._focus_page, "Ctrl+G")
         self.a_about = self._act("პროგრამის შესახებ", self.about, needs_doc=False)
         self.a_default = self._act("PDF-ების ETRATI-ით გახსნა…", self.make_default, needs_doc=False)
+        self.a_update = self._act("განახლების შემოწმება…", lambda: self.check_updates(manual=True),
+                                  needs_doc=False)
         e = self._edit_action
         self.a_save = self._act("შენახვა", lambda: self.doc.save(), "Ctrl+S", 0xE74E)
         self.a_save_as = self._act("შენახვა როგორც…", lambda: self.doc.save_as(), "Ctrl+Shift+S")
@@ -504,7 +515,8 @@ class MainWindow(QMainWindow):
             group.addAction(a)
             menu.addAction(a)
             self.theme_actions[mode] = a
-        mb.addMenu("დახმარება").addAction(self.a_about)
+        h = mb.addMenu("დახმარება")
+        h.addActions([self.a_update, self.a_about])
 
     def set_theme(self, mode):
         """Puts a theme on the program and remembers it."""
@@ -521,6 +533,7 @@ class MainWindow(QMainWindow):
             self._paint_icon(a, code)
         self.swatches.update()
         self.welcome.recolor()
+        self.update_banner.recolor()
         for d in self._docs():
             d.banner.recolor()
             if getattr(d, "ai", None) is not None:
@@ -896,6 +909,31 @@ class MainWindow(QMainWindow):
                 "მოგვიანებით: ფაილი → „PDF-ების ETRATI-ით გახსნა…“"
                 ) == QMessageBox.StandardButton.Yes:
             self.make_default()
+
+    def check_updates(self, manual=False):
+        """Asks GitHub about a newer version: at most once a day by itself, or when asked."""
+        import sys
+        from . import updates
+        if not manual:
+            last = self.settings.value("update_checked", 0, type=int)
+            if not getattr(sys, "frozen", False) or time.time() - last < 86400:
+                return
+        self.settings.setValue("update_checked", int(time.time()))
+        self._checker = updates.Checker(self)
+        self._checker.done.connect(lambda r: self._update_result(r, manual))
+        self._checker.start()
+
+    def _update_result(self, result, manual):
+        from . import __version__, updates
+        if result and updates.newer(result["version"]):
+            self.update_banner.show_message(
+                "info", f"ხელმისაწვდომია ETRATI-ის ახალი ვერსია {result['version']} "
+                        f"(თქვენი ვერსია: {__version__}).",
+                "ჩამოტვირთვა…", lambda url=result["url"]: updates.open_page(url))
+        elif manual:
+            text = (f"თქვენ უახლესი ვერსია გაქვთ ({__version__})." if result else
+                    "შემოწმება ვერ მოხერხდა. შეამოწმეთ ინტერნეტთან კავშირი და სცადეთ მოგვიანებით.")
+            QMessageBox.information(self, "განახლება", text)
 
     def about(self):
         QMessageBox.about(self, APP_NAME,

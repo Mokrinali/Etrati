@@ -170,9 +170,7 @@ def apply_theme(app, mode: str = "light") -> str:
     global _now
     _load()
     _now = resolve(mode)
-    if not app.property("etrati_style"):  # a style sheet hides the style's own class
-        app.setStyle(_style())
-        app.setProperty("etrati_style", True)
+    app.setStyle(_style())  # every time: someone may have set another style meanwhile
     load_fonts(app)
     app.setPalette(palette())
     app.setStyleSheet(style_sheet())

@@ -84,6 +84,7 @@ def main() -> int:
     if getattr(sys, "frozen", False):  # an installed program; not when started from the sources
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1200, win.offer_default)
+        QTimer.singleShot(4000, win.check_updates)  # quietly, at most once a day
     for path in paths:
         win.open_file(path)
     code = app.exec()

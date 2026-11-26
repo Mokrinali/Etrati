@@ -56,6 +56,7 @@ def test_message_icons_in_coloured_circles(app):  # noqa: F811
         edge = img.pixelColor(img.width() // 2, 3)  # just inside the circle, above the sign
         want = theme.color(soft)
         assert abs(edge.red() - want.red()) < 12 and abs(edge.blue() - want.blue()) < 12, sp
-    first = a.style()
-    theme.apply_theme(a, "light")  # stays one style, not wrapped again
-    assert a.property("etrati_style") and a.style() is first
+    a.setStyle("Fusion")  # another style set later is replaced by the next theme
+    theme.apply_theme(a, "light")
+    img = a.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(36, 36).toImage()
+    assert img.pixelColor(img.width() // 2, 3).alpha() > 200
