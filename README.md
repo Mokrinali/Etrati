@@ -42,7 +42,7 @@ Office ფაილების გარდაქმნას დაყენ�
 .\.venv\Scripts\pyinstaller --noconfirm --distpath dist-folder --workpath build-folder ETRATI-folder.spec
 ```
 
-შედეგი იქნება `dist-folder\ETRATI\ETRATI.exe`, საქაღალდესთან ერთად, რომელიც სწრაფად ეშვება. ერთი ფაილის ვარიანტისთვის გამოიყენეთ `ETRATI.spec`: ის ერთ ფაილად იკვრება, მაგრამ ნელა იხსნება.
+შედეგი იქნება `dist-folder\ETRATI\ETRATI.exe`, საქაღალდესთან ერთად, რომელიც სწრაფად ეშვება.
 
 ## ფაილების დაცვა
 
