@@ -1,8 +1,10 @@
 # Offers ETRATI to Windows as a program for PDF files, for the current user only.
 # The default itself can only be chosen by the user, in Windows Settings.
 #   register_pdf.ps1             register and open the Settings page
+#   register_pdf.ps1 -Source     register the sources (pythonw + etrati.pyw) even when an exe is built
 #   register_pdf.ps1 -Remove     undo everything this script wrote
-param([switch]$Remove, [switch]$NoSettings)
+# A built program (dist-folder\ETRATI\ETRATI.exe, see ETRATI-folder.spec) is used when it is there.
+param([switch]$Remove, [switch]$NoSettings, [switch]$Source)
 
 $root = Split-Path $PSScriptRoot
 $prog = 'HKCU:\Software\Classes\ETRATI.pdf'
@@ -33,10 +35,17 @@ if ($Remove) {
     return
 }
 
-$python = Join-Path $root '.venv\Scripts\pythonw.exe'
-$start = Join-Path $root 'etrati.pyw'
-$icon = Join-Path $root 'furceli\assets\furceli.ico'
-foreach ($file in $python, $start, $icon) { if (-not (Test-Path -LiteralPath $file)) { throw "Missing: $file" } }
+$exe = Join-Path $root 'dist-folder\ETRATI\ETRATI.exe'
+if ((Test-Path -LiteralPath $exe) -and -not $Source) {
+    $icon = $exe
+    $open = "`"$exe`" `"%1`""
+} else {
+    $python = Join-Path $root '.venv\Scripts\pythonw.exe'
+    $start = Join-Path $root 'etrati.pyw'
+    $icon = Join-Path $root 'furceli\assets\furceli.ico'
+    foreach ($file in $python, $start, $icon) { if (-not (Test-Path -LiteralPath $file)) { throw "Missing: $file" } }
+    $open = "`"$python`" `"$start`" `"%1`""
+}
 
 foreach ($key in "$prog\DefaultIcon", "$prog\Application", "$prog\shell\open\command",
                  "$caps\Capabilities\FileAssociations", $apps, $with) {
@@ -44,7 +53,7 @@ foreach ($key in "$prog\DefaultIcon", "$prog\Application", "$prog\shell\open\com
 }
 Set-Item $prog 'PDF (ETRATI)'
 Set-Item "$prog\DefaultIcon" "`"$icon`",0"
-Set-Item "$prog\shell\open\command" "`"$python`" `"$start`" `"%1`""
+Set-Item "$prog\shell\open\command" $open
 Set-ItemProperty "$prog\Application" ApplicationName 'ETRATI'
 Set-ItemProperty "$prog\Application" ApplicationIcon "$icon,0"
 Set-ItemProperty "$prog\Application" ApplicationDescription 'PDF viewer and editor'
@@ -56,5 +65,5 @@ Set-ItemProperty "$caps\Capabilities\FileAssociations" '.pdf' 'ETRATI.pdf'
 Set-ItemProperty $apps 'ETRATI' 'Software\ETRATI\Capabilities'
 New-ItemProperty $with -Name 'ETRATI.pdf' -PropertyType String -Value '' -Force | Out-Null
 Update-Shell
-'ETRATI is registered for PDF files.'
+"ETRATI is registered for PDF files: $open"
 if (-not $NoSettings) { Start-Process 'ms-settings:defaultapps?registeredAppUser=ETRATI' }
