@@ -34,6 +34,7 @@ ERRORS = {
     "scrub_failed": "JavaScript-ის სრულად წაშლა ვერ დადასტურდა, ამიტომ არაფერი შევცვალე.",
     "scrub_changed": "უხილავი ტექსტის წაშლა გვერდის იერს შეცვლიდა, ამიტომ არაფერი შევცვალე. "
                      "სცადეთ ამ პუნქტის გარეშე.",
+    "outside": "პროგრამის შიდა შეცდომა: ფაილი დაუშვებელ ადგილას იწერებოდა და შეჩერდა.",
     "untrusted": "ამ ფაილში გარე ბმულებს საიმედოდ ვერ ვჭრი, ამიტომ არ გავხსენი. გახსენით Office-ში, "
                  "შეამოწმეთ და შეინახეთ ახალ ფორმატში (.docx, .xlsx, .pptx).",
     "has_text": "PDF-ს ტექსტი უკვე აქვს; გასუფთავება არ სჭირდება.",
@@ -220,7 +221,7 @@ class MergeDialog(QDialog):
                for i in items):
             QMessageBox.warning(self, "გაერთიანება", "აირჩიეთ სხვა სახელი: ეს ერთ-ერთი საწყისი ფაილია.")
             return
-        tmp = files.temp_name(out)
+        tmp = files.outbox(out)
         try:
             run_task(self.client, "merge", (items, self.marks.isChecked(), tmp),
                      "ფაილები ერთიანდება…", self)

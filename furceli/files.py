@@ -88,12 +88,92 @@ def discard(path: str):
             os.remove(path)
 
 
+def _near(tmp: str, target: str) -> str:
+    """tmp as a file in the target's folder: only there can it be renamed into place.
+
+    The engine writes into its own folder, often on another drive than the target.
+    """
+    if os.path.dirname(os.path.abspath(tmp)) == os.path.dirname(os.path.abspath(target)):
+        return tmp
+    near = temp_name(target)
+    try:
+        shutil.copyfile(tmp, near)
+        _flush(near)
+    except BaseException:
+        discard(near)
+        raise
+    return near
+
+
+def _tidy(tmp: str):
+    """The engine's file and its private folder go once they are delivered."""
+    discard(tmp)
+    folder = os.path.dirname(os.path.abspath(tmp))
+    if _root and os.path.dirname(folder) == os.path.abspath(_root):
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)
+
+
 def put_in_place(tmp: str, target: str) -> str | None:
     """Replace target by tmp, backing up what was there. Returns the backup path."""
     saved = make_backup(target) if os.path.exists(target) else None
     _flush(tmp)
-    _replace(tmp, target)
+    near = _near(tmp, target)
+    try:
+        _replace(near, target)
+    except BaseException:
+        if near != tmp:
+            discard(near)
+        raise
+    if near != tmp:
+        _tidy(tmp)
     return saved
+
+
+def deliver_all(pairs: list) -> None:
+    """New files [(engine file, target), ...]: all of them or none; never over another file."""
+    done = []
+    try:
+        for tmp, target in pairs:
+            near = _near(tmp, target)
+            try:
+                os.rename(near, target)  # refuses a name taken meanwhile
+            except BaseException:
+                if near != tmp:
+                    discard(near)
+                raise
+            done.append(target)
+    except BaseException:
+        for target in done:
+            discard(target)
+        raise
+    for tmp, _ in pairs:
+        _tidy(tmp)
+
+
+# -- the engine's own folder -------------------------------------------------
+_root: str | None = None
+
+
+def engine_root() -> str:
+    """The one folder engines of this window may write to. The window puts what they wrote
+    in its place, so a PDF that takes over an engine cannot reach the user's files this way.
+    """
+    global _root
+    if _root is None or not os.path.isdir(_root):
+        _root = new_session()
+    return _root
+
+
+def outbox_dir() -> str:
+    """A folder of its own inside the engine's folder, for working files of one task."""
+    return tempfile.mkdtemp(dir=engine_root())
+
+
+def outbox(target: str) -> str:
+    """Where an engine writes what is meant for target: a folder of its own for every file,
+    so that two files of the same name never meet."""
+    return os.path.join(tempfile.mkdtemp(dir=engine_root()), os.path.basename(target) or "file")
 
 
 # -- temporary folders -------------------------------------------------------

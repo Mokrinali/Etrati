@@ -460,7 +460,7 @@ class ScanDialog(QDialog):
         bar = QProgressDialog("გვერდები მუშავდება…", "გაუქმება", 0, len(good) + 1, self)
         bar.setWindowModality(Qt.WindowModality.WindowModal)
         bar.setMinimumDuration(0)
-        folder, tmp = files.new_session(), files.temp_name(out)
+        folder, tmp = files.outbox_dir(), files.outbox(out)
         self.words = 0
         try:
             parts = []

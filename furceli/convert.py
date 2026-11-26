@@ -878,28 +878,22 @@ def to_pptx(eng, out, pages):
 
 
 def to_images(eng, targets, dpi):
-    """targets = [(page, path), ...]; the extension picks the format. All or nothing."""
+    """targets = [(page, path), ...] in the engine's folder; the extension picks the format.
+    All or nothing: the window puts them in their places."""
     made = []
     try:
         for p, path in targets:
             page = eng.doc.load_page(p)
             limit = 72 * (60_000_000 / (page.rect.width * page.rect.height)) ** .5
             pix = page.get_pixmap(dpi=max(int(min(dpi, limit)), 8))
-            stem, ext = os.path.splitext(path)
-            tmp = files.unique_path(stem + ".furceli" + ext)
-            made.append((tmp, path))
-            if ext.lower() in (".jpg", ".jpeg"):
-                pix.save(tmp, jpg_quality=92)
+            made.append(path)
+            if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg"):
+                pix.save(path, jpg_quality=92)
             else:
-                pix.save(tmp)
-        done = []
-        for tmp, path in made:
-            os.rename(tmp, path)  # the names were free: never over somebody's file
-            done.append(path)
+                pix.save(path)
     except Exception:
-        for path in [t for t, _ in made] + (done if "done" in locals() else []):
-            if os.path.exists(path):
-                os.remove(path)
+        for path in made:
+            files.discard(path)
         raise EngineError("save_failed")
     return len(made)
 

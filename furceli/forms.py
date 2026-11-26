@@ -632,7 +632,7 @@ class SignDialog(QDialog):
             os.path.expanduser(f"~/{files.safe_name(name)}.pfx")), "სერტიფიკატი (*.pfx)")
         if not out:
             return
-        tmp = files.temp_name(out)
+        tmp = files.outbox(out)
         try:
             run_task(self.client, "make_certificate", (tmp, pw, name.strip()), "იქმნება…", self)
             files.put_in_place(tmp, out)  # a certificate that was there is kept as a backup

@@ -818,7 +818,7 @@ class DocView(ToolsMixin, QWidget):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _export(self, parts) -> bool:
-        tmps = [(g, files.temp_name(p)) for g, p in parts]
+        tmps = [(g, files.outbox(p)) for g, p in parts]
         try:
             run_task(self.client, "export", (tmps,), "ფაილები იქმნება…", self)
             for (_, t), (_, p) in zip(tmps, parts):
@@ -952,7 +952,7 @@ class DocView(ToolsMixin, QWidget):
         tmp = ""
         try:
             files.drop_stale_temps(target)
-            tmp = files.temp_name(target)
+            tmp = files.outbox(target)
             run_task(self.client, "save", (tmp,), "ინახება…", self)
             if os.path.exists(target) and os.path.getsize(target) > 20 * 1024 * 1024:
                 backup = run_thread(lambda: files.put_in_place(tmp, target), "ინახება…", self)

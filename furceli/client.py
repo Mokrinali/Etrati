@@ -49,6 +49,7 @@ class EngineClient(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ctx = mp.get_context("spawn")
+        self._root = files.engine_root()  # the only folder the engine may write to
         self._cv = threading.Condition()
         self._pending: dict = {}     # key -> (seq, op, args)
         self._heap: list = []        # (priority, seq, key); stale entries are skipped
@@ -139,7 +140,7 @@ class EngineClient(QObject):
     # -- worker thread -----------------------------------------------------
     def _start(self):
         parent, child = self._ctx.Pipe()
-        proc = self._ctx.Process(target=serve, args=(child,), daemon=True)
+        proc = self._ctx.Process(target=serve, args=(child, self._root), daemon=True)
         proc.start()
         child.close()
         self._conn = parent

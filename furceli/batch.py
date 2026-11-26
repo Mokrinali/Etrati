@@ -177,7 +177,7 @@ class BatchDialog(QDialog):
         return out
 
     def _one(self, client, path, folder, kind):
-        work, source = files.new_session(), path
+        work, source = files.outbox_dir(), path
         try:
             if self.scan.isChecked():
                 source = self._cleaned(client, path, work)
@@ -207,13 +207,12 @@ class BatchDialog(QDialog):
             run_task(client, "apply", (op,), "", None, allow=self._bar)
         stem = os.path.splitext(os.path.basename(path))[0]
         out = files.unique_path(os.path.join(folder, f"{stem}.{kind}"))
-        tmp = files.unique_path(os.path.join(folder, f".furceli-{os.getpid()}.{kind}"))
+        tmp = files.outbox(out)
         try:
             if kind == "pdf":
                 run_task(client, "save", (tmp,), "", None, allow=self._bar)
             else:
                 run_task(client, "export_as", (kind, tmp, list(range(n))), "", None, allow=self._bar)
-            os.replace(tmp, out)
+            files.deliver_all([(tmp, out)])
         finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            files.discard(tmp)

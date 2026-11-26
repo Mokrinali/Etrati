@@ -16,9 +16,33 @@ NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign", "veri
 ALLOWED = QUERIES | CHANGES | NO_DOC | {"export_as", "to_images"}
 
 
-def run(engine, op, args):
+# Which arguments of an operation are the files it writes.
+WRITES = {"save": lambda a: [a[0]], "export": lambda a: [p for _, p in a[0]],
+          "merge": lambda a: [a[2]], "pdfa": lambda a: [a[0]], "make_pdf": lambda a: [a[1]],
+          "export_as": lambda a: [a[1]], "to_images": lambda a: [p for _, p in a[0]],
+          "sign": lambda a: [a[1]], "make_certificate": lambda a: [a[0]],
+          "scan_build": lambda a: [a[3]], "scan_join": lambda a: [a[1]]}
+
+
+def _inside(path, root) -> bool:
+    try:
+        path, root = (os.path.normcase(os.path.realpath(str(p))) for p in (path, root))
+        return os.path.commonpath([path, root]) == root and path != root
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def run(engine, op, args, root=None):
     if op not in ALLOWED:
         raise EngineError("bad_op")
+    # The engine writes only into its own folder; the window puts the files in place.
+    if root is not None and op in WRITES:
+        try:
+            targets = WRITES[op](args)
+        except (IndexError, TypeError, ValueError):
+            raise EngineError("bad_op")
+        if not all(_inside(p, root) for p in targets):
+            raise EngineError("outside")
     if op not in NO_DOC and engine.doc is None:
         raise EngineError("not_open")
     if op in SCAN:
@@ -36,7 +60,7 @@ def run(engine, op, args):
     return getattr(engine, op)(*args)
 
 
-def serve(conn):
+def serve(conn, root=None):
     engine = Features()
     convert.notify = conn.send
     testing = bool(os.environ.get("FURCELI_TEST"))
@@ -54,7 +78,7 @@ def serve(conn):
             conn.send(("ok", None))
             continue
         try:
-            conn.send(("ok", run(engine, op, args)))
+            conn.send(("ok", run(engine, op, args, root)))
         except EngineError as e:
             conn.send(("err", str(e)))
         except Exception as e:

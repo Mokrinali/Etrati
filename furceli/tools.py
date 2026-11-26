@@ -594,7 +594,7 @@ class ToolsMixin:
             return None
         if not out.lower().endswith("." + kind):
             out = files.unique_path(out + "." + kind)
-        stem, ext = os.path.splitext(files.temp_name(out))
+        stem, ext = os.path.splitext(files.outbox(out))
         tmp = stem + "." + kind  # the libraries choose the format by the extension
         try:
             note = run_task(self.client, "export_as", (kind, tmp, list(range(len(self.sizes)))),
@@ -622,8 +622,17 @@ class ToolsMixin:
         width = len(str(len(self.sizes)))
         targets = [(p, files.unique_path(os.path.join(folder, f"{stem} {p + 1:0{width}d}.{fmt}")))
                    for p in range(len(self.sizes))]
-        if not self._task("to_images", (targets, dpi), "სურათები იქმნება…"):
+        work = [(p, files.outbox(t)) for p, t in targets]
+        try:
+            if not self._task("to_images", (work, dpi), "სურათები იქმნება…"):
+                return []
+            files.deliver_all([(w, t) for (_, w), (_, t) in zip(work, targets)])
+        except OSError:
+            QMessageBox.warning(self, APP_NAME, error_text("no_access"))
             return []
+        finally:
+            for _, w in work:
+                files.discard(w)
         self.status.emit(f"შეიქმნა {len(targets)} სურათი")
         return [t for _, t in targets]
 
@@ -639,7 +648,7 @@ class ToolsMixin:
         if os.path.normcase(os.path.abspath(out)) == os.path.normcase(self.path):
             QMessageBox.warning(self, "PDF/A", "აირჩიეთ სხვა სახელი: ეს თვითონ ეს ფაილია.")
             return
-        tmp = files.temp_name(out)
+        tmp = files.outbox(out)
         try:
             problems = run_task(self.client, "pdfa", (tmp,), "იქმნება…", self)
             if problems:
@@ -725,7 +734,7 @@ class ToolsMixin:
             if box is None:
                 return
             o.update(page=pno, box=box, field=field)
-        tmp = files.temp_name(out)
+        tmp = files.outbox(out)
         try:
             run_task(self.client, "sign", (self.path, tmp, self._password, dlg.pfx(),
                                            dlg.password(), o), "ხელი ეწერება…", self)

@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
                                     "გააგრძელეთ, თუ წყაროს ენდობით.") != QMessageBox.StandardButton.Yes:
                 return
         client = EngineClient(self)
-        tmp = files.temp_name(out)
+        tmp = files.outbox(out)
         try:
             run_task(client, "make_pdf", (paths, tmp, bool(old)), "PDF იქმნება…", self)
             files.put_in_place(tmp, out)

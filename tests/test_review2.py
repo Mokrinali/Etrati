@@ -560,7 +560,10 @@ def test_f7_killed_engine_leaves_no_folders(doc, monkeypatch):
 
 
 def test_f14_image_export_is_all_or_nothing_to_the_end(tmp_path, monkeypatch):
+    # The engine writes into its own folder; the window puts the pictures in place, all or none.
     e = engine(build(tmp_path / "a.pdf"))
+    work = [(k, files.outbox(str(tmp_path / f"{k}.png"))) for k in range(3)]
+    assert convert.to_images(e, work, 40) == 3
     real, n = os.rename, []
 
     def second_fails(a, b):
@@ -568,9 +571,9 @@ def test_f14_image_export_is_all_or_nothing_to_the_end(tmp_path, monkeypatch):
         if len(n) == 2:
             raise OSError("disk")
         real(a, b)
-    monkeypatch.setattr(convert.os, "rename", second_fails)
-    with pytest.raises(EngineError):
-        convert.to_images(e, [(k, str(tmp_path / f"{k}.png")) for k in range(3)], 40)
+    monkeypatch.setattr(files.os, "rename", second_fails)
+    with pytest.raises(OSError):
+        files.deliver_all([(w, str(tmp_path / f"{k}.png")) for k, w in work])
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".png")]
 
 
