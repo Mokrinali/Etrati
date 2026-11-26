@@ -76,3 +76,14 @@ QListWidget#recent::item { border-bottom: 1px solid {line}; }
 QListWidget#recent::item:last { border-bottom: 0; }
 QListWidget#recent::item:hover { background: {surface-200}; }
 QListWidget#recent::item:selected { background: {brand-soft}; }
+/* Sidebar (design/components/Sidebar): a segmented control instead of tabs */
+QTabWidget#sidebar { background: {surface-200}; border-right: 1px solid {line}; }
+QTabWidget#sidebar::pane { background: {surface-200}; border: 0; }
+QTabWidget#sidebar::tab-bar { alignment: center; }
+QTabWidget#sidebar > QTabBar { background: {surface-200}; }
+QTabWidget#sidebar > QTabBar::tab { height: 26px; margin: 8px 1px 4px 1px; padding: 0 8px; font-size: 12px; color: {ink-muted}; background: transparent; border: 1px solid transparent; border-radius: 6px; }
+QTabWidget#sidebar > QTabBar::tab:hover { color: {ink}; background: {surface-100}; }
+QTabWidget#sidebar > QTabBar::tab:selected { color: {ink}; background: {surface-raised}; border: 1px solid {line}; font-family: "Noto Sans Georgian SemiBold", "Noto Sans SemiBold", "Segoe UI Semibold"; font-weight: 400; }
+QTabWidget#sidebar > QTabBar::tab:disabled { color: {ink-disabled}; }
+QTabWidget#sidebar QListView, QTabWidget#sidebar QTreeWidget, QTabWidget#sidebar QListWidget { background: {surface-200}; border: 0; }
+QTabWidget#sidebar QListView::item:selected { background: transparent; }

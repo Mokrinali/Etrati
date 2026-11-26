@@ -184,6 +184,8 @@ class DocView(ToolsMixin, QWidget):
     # -- layout ------------------------------------------------------------
     def _build_sidebar(self):
         self.sidebar = QTabWidget()
+        self.sidebar.setObjectName("sidebar")  # segmented look: assets/etrati.qss
+        self.sidebar.tabBar().setDrawBase(False)
         self.list = ThumbList(self, 120, 160)
         self.list.clicked.connect(self._thumb_clicked)
         self._wire(self.list)

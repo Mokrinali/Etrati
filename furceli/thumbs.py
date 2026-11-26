@@ -4,9 +4,9 @@ from __future__ import annotations
 from collections import OrderedDict
 
 from PySide6.QtCore import (QAbstractListModel, QItemSelection, QItemSelectionModel, QMimeData,
-                            QModelIndex, QPoint, QRectF, QSize, Qt, Signal)
-from PySide6.QtGui import QDrag, QImage, QPainter, QPalette, QPen, QPixmap
-from PySide6.QtWidgets import QAbstractItemView, QListView
+                            QModelIndex, QPoint, QPointF, QRectF, QSize, Qt, Signal)
+from PySide6.QtGui import QColor, QDrag, QFont, QImage, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
 from . import theme
 
@@ -55,7 +55,7 @@ class ThumbModel(QAbstractListModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return self.doc.page_label(pno)
         if role == Qt.ItemDataRole.SizeHintRole:
-            return QSize(self.w + 24, self.h + 34)
+            return QSize(self.w + 24, self.h + 38)
         if role == Qt.ItemDataRole.DecorationRole:
             img = self.doc.thumbs.get(pno)
             if img is None:
@@ -69,18 +69,21 @@ class ThumbModel(QAbstractListModel):
         pix.setDevicePixelRatio(dpr)
         pix.fill(Qt.GlobalColor.transparent)
         w, h = self.doc.sizes[pno]
-        k = min(self.w / w, self.h / h)
-        tw, th = max(w * k, 4), max(h * k, 4)
+        box = self.page_box(pno)
         p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        box = QRectF((self.w - tw) / 2 + .5, (self.h - th) / 2 + .5, tw - 1, th - 1)
         p.fillRect(box, theme.color("paper"))
         if img is not None:
             p.drawImage(box, img)
-        p.setPen(theme.color("line-strong"))
-        p.drawRect(box)
         p.end()
         return pix
+
+    def page_box(self, pno) -> QRectF:
+        """Where the page lies in its picture."""
+        w, h = self.doc.sizes[pno]
+        k = min(self.w / w, self.h / h)
+        tw, th = max(w * k, 4), max(h * k, 4)
+        return QRectF((self.w - tw) / 2 + .5, (self.h - th) / 2 + .5, tw - 1, th - 1)
 
     def reset(self):
         self.beginResetModel()
@@ -90,6 +93,54 @@ class ThumbModel(QAbstractListModel):
     def refresh(self, pno):
         i = self.index(pno)
         self.dataChanged.emit(i, i, [Qt.ItemDataRole.DecorationRole])
+
+
+class ThumbDelegate(QStyledItemDelegate):
+    """A page with a soft shadow; a chosen one gets a red frame and a red number
+    (design/components/Sidebar)."""
+
+    def paint(self, p, option, index):
+        view, model = self.parent(), index.model()
+        pno = index.row()
+        if pno >= len(model.doc.sizes):
+            return
+        chosen = bool(option.state & QStyle.StateFlag.State_Selected)
+        r = option.rect
+        icon = view.iconSize()
+        top = QPointF(r.x() + (r.width() - icon.width()) / 2, r.y() + 6)
+        box = model.page_box(pno).translated(top)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        dark = theme.current() == "dark"
+        for grow, alpha in ((4, 10), (2, 18), (1, 30)):  # shadow-page, roughly
+            p.setBrush(QColor(0, 0, 0, alpha * (3 if dark else 1)))
+            p.drawRoundedRect(box.adjusted(-grow, -grow + 2, grow, grow + 2), 3, 3)
+        pix = index.data(Qt.ItemDataRole.DecorationRole)
+        if pix is not None:
+            p.drawPixmap(top, pix)
+        if chosen:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(theme.color("brand"), 2))
+            p.drawRoundedRect(box.adjusted(-4, -4, 4, 4), 3, 3)
+        f = QFont(option.font)
+        f.setFamilies(["Noto Sans Georgian Medium", "Noto Sans Medium", "Segoe UI"])
+        f.setPixelSize(11)
+        p.setFont(f)
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        m = p.fontMetrics()
+        tw = m.horizontalAdvance(text) + 12
+        badge = QRectF(r.x() + (r.width() - tw) / 2, top.y() + icon.height() + 8, tw, 16)
+        if chosen:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("brand"))
+            p.drawRoundedRect(badge, 4, 4)
+        p.setPen(theme.color("on-brand" if chosen else "ink-muted"))
+        p.drawText(badge, Qt.AlignmentFlag.AlignCenter, text)
+        p.restore()
+
+    def sizeHint(self, option, index):
+        return index.data(Qt.ItemDataRole.SizeHintRole)
 
 
 class ThumbList(QListView):
@@ -109,6 +160,7 @@ class ThumbList(QListView):
         self.setUniformItemSizes(True)
         self.setIconSize(QSize(width, height))
         self.setSpacing(4)
+        self.setItemDelegate(ThumbDelegate(self))
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)

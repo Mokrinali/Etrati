@@ -54,3 +54,17 @@ def test_drop_frame_shows_and_hides(win):  # noqa: F811
     assert win.drop_frame.isVisible()
     win.dragLeaveEvent(QDragLeaveEvent())
     assert not win.drop_frame.isVisible()
+
+
+def test_sidebar_looks(win, tmp_path):  # noqa: F811
+    """Segmented sidebar; a chosen page is drawn with a red frame and number."""
+    from PySide6.QtGui import QImage
+    doc = open_doc(win, build(tmp_path / "s.pdf"))
+    assert doc.sidebar.objectName() == "sidebar"
+    doc.sidebar.setCurrentIndex(0)
+    doc.list.select([1])
+    settled(doc)
+    img = doc.list.viewport().grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
+    red = sum(1 for y in range(0, img.height(), 2) for x in range(0, img.width(), 2)
+              if img.pixelColor(x, y).red() > 180 and img.pixelColor(x, y).green() < 70)
+    assert red > 40
