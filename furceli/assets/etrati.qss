@@ -61,3 +61,18 @@ QGroupBox { border: 1px solid {line}; border-radius: 8px; margin-top: 14px; padd
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {ink-muted}; }
 QTabBar::close-button { image: url({close}); subcontrol-position: right; border-radius: 4px; margin: 2px; }
 QTabBar::close-button:hover { background: {surface-200}; }
+/* WelcomeScreen (design/components/WelcomeScreen) */
+QScrollArea#welcome, QWidget#welcome-page { background: {surface-100}; border: 0; }
+QLabel[role="muted"] { color: {ink-muted}; }
+QPushButton[variant="card"] { background: {surface-raised}; border: 1px solid {line}; border-radius: 12px; padding: 0; min-height: 0; text-align: left; }
+QPushButton[variant="card"]:hover { border-color: {line-strong}; background: {surface-raised}; }
+QPushButton[variant="card"]:pressed { background: {surface-200}; }
+QPushButton[variant="card"]:focus { border: 2px solid {focus}; }
+QLabel[role="tile"] { background: {brand-soft}; border-radius: 8px; }
+QLabel[role="tile"][main="true"] { background: {brand}; }
+QLabel[role="fico"] { background: {brand-soft}; color: {brand-text}; border-radius: 3px; }
+QListWidget#recent { background: {surface-raised}; border: 1px solid {line}; border-radius: 12px; padding: 0; outline: 0; }
+QListWidget#recent::item { border-bottom: 1px solid {line}; }
+QListWidget#recent::item:last { border-bottom: 0; }
+QListWidget#recent::item:hover { background: {surface-200}; }
+QListWidget#recent::item:selected { background: {brand-soft}; }

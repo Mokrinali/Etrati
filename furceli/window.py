@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 
 from PySide6.QtCore import QSettings, QSize, Qt, QUrl
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont, QIcon, QKeySequence,
@@ -19,6 +20,7 @@ from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
 from .scan_dialog import ScanDialog
+from .welcome import DropFrame, WelcomeScreen
 from .docview import DocView
 from .printing import PrintError, choose_and_print
 
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._welcome())
         self.stack.addWidget(self.tabs)
         self.setCentralWidget(self.stack)
+        self.drop_frame = DropFrame(self)
         self._actions()
         self._toolbar()
         self._menus()
@@ -463,6 +466,7 @@ class MainWindow(QMainWindow):
         ink = self.palette().color(QPalette.ColorRole.WindowText)
         for a, code in self._glyphs:
             a.setIcon(glyph(code, ink))
+        self.welcome.recolor()
         for d in self._docs():
             d.view.viewport().update()
             for w in (getattr(d, "list", None), getattr(d, "grid", None)):
@@ -517,38 +521,15 @@ class MainWindow(QMainWindow):
         return [self.tabs.widget(i) for i in range(self.tabs.count())]
 
     def _welcome(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title = QLabel("ეტრატი")  # design: the name in Georgian, display style
-        f = title.font()
-        f.setFamilies(["Noto Sans Georgian SemiBold", "Noto Sans Georgian", "Sylfaen"])
-        f.setPixelSize(40)
-        title.setFont(f)
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint = QLabel("გახსენით PDF ფაილი ან ჩააგდეთ ამ ფანჯარაში")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn = theme.variant(QPushButton("ფაილის გახსნა…"), "primary")
-        btn.setMinimumHeight(38)
-        btn.clicked.connect(self.choose_files)
-        btn3 = QPushButton("PDF სხვა ფაილებისგან…")
-        btn3.setMinimumHeight(38)
-        btn3.clicked.connect(self.create_pdf)
-        btn4 = QPushButton("ფოტოს ან სკანის გასუფთავება…")
-        btn4.setMinimumHeight(38)
-        btn4.clicked.connect(lambda *_: self.scan())
-        btn2 = QPushButton("ფაილების გაერთიანება…")
-        btn2.setMinimumHeight(38)
-        btn2.clicked.connect(self.merge)
-        self.recent_label = QLabel("ბოლოს გახსნილი")
-        self.recent_list = QListWidget()
-        self.recent_list.setFixedSize(560, 260)
-        self.recent_list.itemActivated.connect(
-            lambda it: self.open_file(it.data(Qt.ItemDataRole.UserRole)))
-        for x in (title, hint, btn, btn3, btn4, btn2, self.recent_label, self.recent_list):
-            lay.addWidget(x)
-            lay.addSpacing(6)
-        return w
+        self.welcome = WelcomeScreen([
+            ("ფაილის გახსნა…", "Ctrl+O", 0xE8E5, self.choose_files),
+            ("PDF სხვა ფაილებისგან…", "Word, Excel, სურათები", 0xE8A5, self.create_pdf),
+            ("ფოტოს ან სკანის გასუფთავება…", "JPG, PNG, HEIC, სურათოვანი PDF", 0xE8FE,
+             lambda: self.scan()),
+            ("ფაილების გაერთიანება…", "Ctrl+M", 0xE8F1, self.merge)])
+        self.welcome.chosen.connect(self.open_file)
+        self.recent_label, self.recent_list = self.welcome.recent_label, self.welcome.recent_list
+        return self.welcome
 
     # -- documents ---------------------------------------------------------
     @property
@@ -603,6 +584,10 @@ class MainWindow(QMainWindow):
 
     def _ready(self, doc):
         self.settings.setValue("dir", os.path.dirname(doc.path))
+        times = self._opened_times()
+        times[os.path.normcase(doc.path)] = int(time.time())
+        keep = {os.path.normcase(p) for p in [doc.path] + self._recent()[:MAX_RECENT]}
+        self.settings.setValue("opened", {k: v for k, v in times.items() if k in keep})
         self._set_recent([doc.path] + [p for p in self._recent()
                                        if os.path.normcase(p) != os.path.normcase(doc.path)])
         self._sync()
@@ -658,19 +643,18 @@ class MainWindow(QMainWindow):
 
     def _refresh_recent(self):
         paths = [p for p in self._recent() if p]
-        self.recent_list.clear()
+        self.welcome.set_recent(paths, self._opened_times())
         self.recent_menu.clear()
         for p in paths:
-            it = QListWidgetItem(f"{os.path.basename(p)}\n{os.path.dirname(p)}")
-            it.setData(Qt.ItemDataRole.UserRole, p)
-            self.recent_list.addItem(it)
             self.recent_menu.addAction(p, lambda p=p: self.open_file(p))
         if paths:
             self.recent_menu.addSeparator()
             self.recent_menu.addAction("სიის გასუფთავება", lambda: self._set_recent([]))
         self.recent_menu.setEnabled(bool(paths))
-        self.recent_label.setVisible(bool(paths))
-        self.recent_list.setVisible(bool(paths))
+
+    def _opened_times(self) -> dict:
+        v = self.settings.value("opened", {})
+        return v if isinstance(v, dict) else {}
 
     def _positions(self) -> dict:
         v = self.settings.value("positions", {})
@@ -849,8 +833,15 @@ class MainWindow(QMainWindow):
         if any(os.path.splitext(u.toLocalFile())[1].lower() in SUPPORTED
                for u in e.mimeData().urls()):
             e.acceptProposedAction()
+            self.drop_frame.setGeometry(self.centralWidget().geometry())
+            self.drop_frame.raise_()
+            self.drop_frame.show()
+
+    def dragLeaveEvent(self, e):
+        self.drop_frame.hide()
 
     def dropEvent(self, e):
+        self.drop_frame.hide()
         other = []
         for u in e.mimeData().urls():
             path = u.toLocalFile()
