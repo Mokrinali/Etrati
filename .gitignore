@@ -30,3 +30,6 @@ build-folder-log.txt
 dist-selftest/
 build-selftest/
 build-selftest-log.txt
+build-share/
+dist-share/
+build-share-work/

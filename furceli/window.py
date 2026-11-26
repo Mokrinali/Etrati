@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
         self.a_pgdn = self._act("შემდეგი გვერდი", d(lambda v: v.step(1)), "Ctrl+PgDown", 0xE70D)
         self.a_goto = self._act("გვერდზე გადასვლა", self._focus_page, "Ctrl+G")
         self.a_about = self._act("პროგრამის შესახებ", self.about, needs_doc=False)
+        self.a_default = self._act("PDF-ების ETRATI-ით გახსნა…", self.make_default, needs_doc=False)
         e = self._edit_action
         self.a_save = self._act("შენახვა", lambda: self.doc.save(), "Ctrl+S", 0xE74E)
         self.a_save_as = self._act("შენახვა როგორც…", lambda: self.doc.save_as(), "Ctrl+Shift+S")
@@ -451,6 +452,8 @@ class MainWindow(QMainWindow):
         f.addAction(self.a_compress)
         f.addSeparator()
         f.addActions([self.a_print, self.a_props, self.a_backups])
+        f.addSeparator()
+        f.addAction(self.a_default)
         f.addSeparator()
         f.addActions([self.a_close, self.a_quit])
         e = mb.addMenu("რედაქტირება")
@@ -863,6 +866,36 @@ class MainWindow(QMainWindow):
         bb.rejected.connect(dlg.reject)
         form.addRow(bb)
         dlg.exec()
+
+    def make_default(self):
+        """Offer ETRATI for PDF files; Windows lets only the person make it the default."""
+        from . import default_app
+        try:
+            default_app.register()
+        except OSError:
+            QMessageBox.warning(self, "PDF ფაილები", "Windows-მა ჩაწერის უფლება არ მისცა. სცადეთ თავიდან.")
+            return
+        if default_app.is_default():
+            QMessageBox.information(self, "PDF ფაილები", "PDF ფაილები უკვე ETRATI-ით იხსნება.")
+            return
+        QMessageBox.information(
+            self, "PDF ფაილები",
+            "ახლა გაიხსნება Windows-ის პარამეტრები. იქ „.pdf“-ის გასწვრივ აირჩიეთ ETRATI "
+            "(ან დააჭირეთ „Set default“).\n\nWindows ამ არჩევანს მხოლოდ თქვენ გაძლევთ, "
+            "პროგრამა თავად ვერ გააკეთებს.")
+        default_app.open_settings()
+
+    def offer_default(self):
+        """Asked once, on the first start of an installed ETRATI."""
+        from . import default_app
+        if self.settings.value("asked_default", False, type=bool) or default_app.is_default():
+            return
+        self.settings.setValue("asked_default", True)
+        if QMessageBox.question(
+                self, "PDF ფაილები", "გავხადო ETRATI PDF ფაილების მთავარი პროგრამა?\n\n"
+                "მოგვიანებით: ფაილი → „PDF-ების ETRATI-ით გახსნა…“"
+                ) == QMessageBox.StandardButton.Yes:
+            self.make_default()
 
     def about(self):
         QMessageBox.about(self, APP_NAME,

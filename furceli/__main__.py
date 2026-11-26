@@ -81,6 +81,9 @@ def main() -> int:
         single.bring_to_front(win)
     receiver.arrived.connect(take)
     win.show()
+    if getattr(sys, "frozen", False):  # an installed program; not when started from the sources
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(1200, win.offer_default)
     for path in paths:
         win.open_file(path)
     code = app.exec()
