@@ -33,3 +33,7 @@ build-selftest-log.txt
 build-share/
 dist-share/
 build-share-work/
+
+# never in the repository
+.elevenlabs-key
+video-guide/
