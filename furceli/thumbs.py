@@ -8,6 +8,8 @@ from PySide6.QtCore import (QAbstractListModel, QItemSelection, QItemSelectionMo
 from PySide6.QtGui import QDrag, QImage, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractItemView, QListView
 
+from . import theme
+
 RENDER_W, RENDER_H = 180, 240
 CACHE = 250
 MIME = "application/x-furceli-pages"
@@ -72,10 +74,10 @@ class ThumbModel(QAbstractListModel):
         p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         box = QRectF((self.w - tw) / 2 + .5, (self.h - th) / 2 + .5, tw - 1, th - 1)
-        p.fillRect(box, Qt.GlobalColor.white)
+        p.fillRect(box, theme.color("paper"))
         if img is not None:
             p.drawImage(box, img)
-        p.setPen(Qt.GlobalColor.gray)
+        p.setPen(theme.color("line-strong"))
         p.drawRect(box)
         p.end()
         return pix

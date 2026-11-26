@@ -1,0 +1,24 @@
+<!-- @dsCard group="Actions" height=96 -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head><meta charset="utf-8"><title>ToolButton</title><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script></head>
+<body>
+<div class="et-pad et-col">
+<div class="et-row" style="gap:2px">
+<button class="et-tool" data-i="select" title="მონიშვნა"></button>
+<button class="et-tool is-on" data-i="highlight" title="მარკერი"></button>
+<button class="et-tool" data-i="text" title="ტექსტი"></button>
+<button class="et-tool" data-i="ink" title="ხატვა"></button>
+<button class="et-tool" data-i="rect" title="ოთხკუთხედი"></button>
+<span class="et-sep"></span>
+<button class="et-tool" data-i="undo"></button>
+<button class="et-tool" data-i="redo" disabled></button>
+<span class="et-sep"></span>
+<button class="et-tool" data-i="ai">AI</button>
+</div>
+<div class="et-row"><span class="et-tip">მარკერი <span class="et-mono">H</span></span></div>
+</div>
+<script>window.Etrati.icons();</script>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

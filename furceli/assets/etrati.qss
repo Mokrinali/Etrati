@@ -1,0 +1,63 @@
+/* ETRATI: design/qt.md. Names of design tokens in braces are replaced by furceli/theme.py; the app font is set in code. */
+QMainWindow, QDialog { background: {surface-100}; }
+QMenuBar { background: {surface-100}; padding: 2px 8px; }
+QMenuBar::item { padding: 4px 8px; border-radius: 4px; }
+QMenuBar::item:selected { background: {surface-200}; }
+QToolBar { background: {surface-100}; border: 0; border-bottom: 1px solid {line}; spacing: 2px; padding: 0 8px; min-height: 44px; }
+QToolBar::separator { width: 1px; background: {line}; margin: 12px 4px; }
+QToolButton { border: 0; border-radius: 6px; padding: 6px; }
+QToolButton:hover { background: {surface-200}; }
+QToolButton:checked { background: {brand-soft}; }
+QPushButton { font-family: "Noto Sans Georgian SemiBold", "Noto Sans SemiBold", "Segoe UI Semibold"; font-weight: 400; min-height: 30px; padding: 0 12px; border: 1px solid {line-strong}; border-radius: 6px; background: {surface-raised}; color: {ink}; }
+QPushButton:hover { background: {surface-200}; }
+QPushButton:focus { border: 2px solid {focus}; }
+QPushButton:disabled { background: {surface-200}; border-color: {line}; color: {ink-disabled}; }
+QPushButton[variant="primary"] { background: {brand}; border-color: {brand}; color: {on-brand}; }
+QPushButton[variant="primary"]:hover { background: {brand-hover}; border-color: {brand-hover}; }
+QPushButton[variant="primary"]:pressed { background: {brand-pressed}; }
+QPushButton[variant="primary"]:focus { border: 2px solid {focus}; }
+QPushButton[variant="primary"]:disabled { background: {surface-200}; border-color: {line}; color: {ink-disabled}; }
+QPushButton[variant="danger"] { color: {danger}; border-color: {danger}; }
+QPushButton[variant="ghost"] { background: transparent; border-color: transparent; }
+QPushButton[variant="ghost"]:hover { background: {surface-200}; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QDateEdit { min-height: 30px; padding: 0 8px; border: 1px solid {line-strong}; border-radius: 6px; background: {surface-raised}; color: {ink}; selection-background-color: {mark-selection}; selection-color: #231f1b; }
+QPlainTextEdit, QTextEdit { padding: 4px 8px; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus { border: 2px solid {focus}; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { background: {surface-200}; border-color: {line}; color: {ink-disabled}; }
+QLineEdit[error="true"] { border-color: {danger}; }
+QComboBox QAbstractItemView { background: {surface-raised}; border: 1px solid {line}; selection-background-color: {brand-soft}; selection-color: {brand-text}; }
+QToolBar QSpinBox, QToolBar QComboBox { min-height: 26px; font-family: "Cascadia Mono", Consolas; font-size: 12px; }
+QTabBar::tab { height: 30px; padding: 0 8px 0 12px; color: {ink-muted}; background: transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+QTabBar::tab:hover { background: {surface-100}; color: {ink}; }
+QTabBar::tab:selected { background: {surface-100}; color: {ink}; font-family: "Noto Sans Georgian SemiBold", "Noto Sans SemiBold", "Segoe UI Semibold"; font-weight: 400; border-top: 2px solid {brand}; }
+QTabWidget::pane { border: 0; }
+QMenu { background: {surface-raised}; border: 1px solid {line}; border-radius: 8px; padding: 4px; }
+QMenu::item { padding: 6px 24px 6px 8px; border-radius: 4px; }
+QMenu::item:selected { background: {brand-soft}; color: {brand-text}; }
+QMenu::item:disabled { color: {ink-disabled}; }
+QMenu::separator { height: 1px; background: {line}; margin: 4px 8px; }
+QStatusBar { background: {surface-200}; border-top: 1px solid {line}; color: {ink-muted}; min-height: 26px; font-size: 12px; }
+QStatusBar QLabel { color: {ink-muted}; }
+QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid {line-strong}; background: {surface-raised}; }
+QCheckBox::indicator { border-radius: 4px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:checked { background: {brand}; border-color: {brand}; image: url({check}); }
+QRadioButton::indicator:checked { border: 5px solid {brand}; width: 6px; height: 6px; }
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { background: {surface-200}; border-color: {line}; }
+QListWidget, QTreeWidget, QTableWidget, QListView { background: {surface-raised}; border: 1px solid {line}; border-radius: 6px; }
+QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected, QListView::item:selected { background: {brand-soft}; color: {ink}; }
+QHeaderView::section { background: {surface-200}; color: {ink-muted}; font-size: 11px; font-family: "Noto Sans Georgian Medium", "Noto Sans Medium", "Segoe UI"; font-weight: 400; padding: 6px 12px; border: 0; border-bottom: 1px solid {line}; }
+QProgressBar { max-height: 6px; border: 0; border-radius: 3px; background: {surface-200}; text-align: center; color: transparent; }
+QProgressBar::chunk { background: {brand}; border-radius: 3px; }
+QScrollBar:vertical { width: 10px; background: transparent; margin: 2px; }
+QScrollBar:horizontal { height: 10px; background: transparent; margin: 2px; }
+QScrollBar::handle { background: {line-strong}; border-radius: 3px; min-height: 32px; min-width: 32px; }
+QScrollBar::handle:hover { background: {ink-muted}; }
+QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page { width: 0; height: 0; background: transparent; }
+QSplitter::handle { background: {line}; }
+QSplitter::handle:horizontal { width: 1px; }
+QToolTip { background: {ink}; color: {surface-100}; border: 0; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+QGroupBox { border: 1px solid {line}; border-radius: 8px; margin-top: 14px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {ink-muted}; }
+QTabBar::close-button { image: url({close}); subcontrol-position: right; border-radius: 4px; margin: 2px; }
+QTabBar::close-button:hover { background: {surface-200}; }

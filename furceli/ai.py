@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                                QTextBrowser, QVBoxLayout, QWidget)
 
+from . import theme
+
 # name shown, model id, USD per million input / output tokens
 MODELS = [("Claude Opus 5.5 (ყველაზე ზუსტი)", "claude-opus-5-5", 4.0, 20.0),
           ("Claude Sonnet 5.5 (საშუალო ფასი)", "claude-sonnet-5-5", 2.0, 10.0),
@@ -241,6 +243,7 @@ class AiSettings(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
                               | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Save).setText("შენახვა")
+        theme.variant(bb.button(QDialogButtonBox.StandardButton.Save), "primary")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
@@ -288,7 +291,7 @@ class AiPanel(QWidget):
         self.box.setFixedHeight(70)
         lay.addWidget(self.box)
         row = QHBoxLayout()
-        self.send = QPushButton("გაგზავნა")
+        self.send = theme.variant(QPushButton("გაგზავნა"), "primary")
         self._idle = True
         self.send.clicked.connect(lambda: self._send_or_stop())
         self.sum = QPushButton("შეჯამება")
@@ -338,7 +341,7 @@ class AiPanel(QWidget):
         if not question or (self.chat and self.chat.busy):
             return
         if not self.doc.info.get("can_copy", True):
-            self._say("ავტორმა ამ ფაილიდან ტექსტის კოპირება აკრძალა, ამიტომ არ ვაგზავნი.", "gray")
+            self._say("ავტორმა ამ ფაილიდან ტექსტის კოპირება აკრძალა, ამიტომ არ ვაგზავნი.", theme.color("ink-muted").name())
             return
         key = load_key(self.settings)
         if not key and self._client is None:
@@ -353,14 +356,14 @@ class AiPanel(QWidget):
             if texts is None:
                 return
             if not any(t.strip() for t in texts):
-                self._say("ამ დოკუმენტში ტექსტი არ არის. დასკანერებულს ჯერ OCR სჭირდება.", "gray")
+                self._say("ამ დოკუმენტში ტექსტი არ არის. დასკანერებულს ჯერ OCR სჭირდება.", theme.color("ink-muted").name())
                 return
             if sum(map(len, texts)) > MAX_CHARS:
-                self._say("დოკუმენტი ძალიან დიდია. ჯერ ამოიღეთ საჭირო გვერდები ცალკე ფაილად.", "gray")
+                self._say("დოკუმენტი ძალიან დიდია. ჯერ ამოიღეთ საჭირო გვერდები ცალკე ფაილად.", theme.color("ink-muted").name())
                 return
             if self.chat is not None:
                 self.chat.stop()
-                self._say("დოკუმენტი შეიცვალა, ამიტომ საუბარი თავიდან იწყება.", "gray")
+                self._say("დოკუმენტი შეიცვალა, ამიტომ საუბარი თავიდან იწყება.", theme.color("ink-muted").name())
             model = self.settings.value("ai/model", MODELS[0][1])
             self.chat = Chat(key, model, texts, self._client)
             self.chat.delta.connect(self._delta)
@@ -369,7 +372,7 @@ class AiPanel(QWidget):
             self.chat.billed.connect(self._add_cost)
             self._rev = self.doc.view.rev
         self.box.clear()
-        self._say(question, "#2f7de1", bold=True)
+        self._say(question, theme.color("info").name(), bold=True)
         self._answer = ""
         self._mark = self.log.document().characterCount()
         self._enable(False)
@@ -428,7 +431,7 @@ class AiPanel(QWidget):
         if self._answer:
             self._forget_stream()
         self._add_cost(usage, model)
-        self._say(text, "#c03030")
+        self._say(text, theme.color("danger").name())
         self._enable(True)
 
     def _link(self, url):

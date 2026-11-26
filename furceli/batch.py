@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBox
                                QLineEdit, QListWidget, QMessageBox, QProgressDialog, QPushButton,
                                QVBoxLayout)
 
-from . import files
+from . import files, theme
 from .client import EngineClient, TaskError, run_task
 from .convert_names import IMAGES
 from .dialogs import PDF_FILTER, error_text
@@ -72,7 +72,7 @@ class BatchDialog(QDialog):
         lay.addLayout(r)
         r = QHBoxLayout()
         r.addStretch()
-        go, close = QPushButton("დაწყება…"), QPushButton("დახურვა")
+        go, close = theme.variant(QPushButton("დაწყება…"), "primary"), QPushButton("დახურვა")
         go.clicked.connect(self.start)
         close.clicked.connect(self.reject)
         r.addWidget(go)

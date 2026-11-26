@@ -1,0 +1,23 @@
+<!-- @dsCard group="Screens" height=600 width=900 page -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head><meta charset="utf-8"><title>WelcomeScreen</title><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script></head>
+<body>
+<div style="background:var(--surface-100);min-height:600px;padding:40px 48px;box-sizing:border-box;display:flex;flex-direction:column;gap:24px">
+<div style="display:flex;align-items:center;gap:16px"><img src="../../assets/Logos/etrati-mark.svg" width="56" height="56" alt=""><div><div style="font-family:var(--font-sans);font-size:40px;line-height:48px;font-weight:600;letter-spacing:.02em">ETRATI</div><div class="et-muted">გახსენით PDF ფაილი ან ჩააგდეთ ამ ფანჯარაში</div></div></div>
+<div class="et-row" style="gap:12px;align-items:stretch;flex-wrap:nowrap">
+<div class="et-action is-main"><span class="et-tile" data-i="open" data-s="18"></span><b>ფაილის გახსნა…</b><span>Ctrl+O</span></div>
+<div class="et-action"><span class="et-tile" data-i="page" data-s="18"></span><b>PDF სხვა ფაილებისგან…</b><span>Word, Excel, სურათები</span></div>
+<div class="et-action"><span class="et-tile" data-i="scan" data-s="18"></span><b>ფოტოს ან სკანის გასუფთავება…</b><span>JPG, PNG, HEIC, სურათოვანი PDF</span></div>
+<div class="et-action"><span class="et-tile" data-i="merge" data-s="18"></span><b>ფაილების გაერთიანება…</b><span>Ctrl+M</span></div>
+</div>
+<div style="font-family:var(--font-sans);font-size:22px;line-height:30px;font-weight:600">ბოლოს გახსნილი</div>
+<div class="et-recent" style="max-width:640px">
+<div class="et-rf"><span class="et-fico">PDF</span><span class="et-meta"><b>ხელშეკრულება_ნიუ_საირმე.pdf</b><span>D:\დოკუმენტები\გრავიტა\2026</span></span><span class="et-when">დღეს</span></div>
+<div class="et-rf"><span class="et-fico">PDF</span><span class="et-meta"><b>მიღება-ჩაბარების აქტი 09-2026.pdf</b><span>D:\დოკუმენტები\აქტები</span></span><span class="et-when">გუშინ</span></div>
+<div class="et-rf"><span class="et-fico">PDF</span><span class="et-meta"><b>ინვოისი GTC ოქტომბერი.pdf</b><span>D:\ჩამოტვირთვები</span></span><span class="et-when">22 ნოე</span></div>
+</div></div>
+<script>window.Etrati.icons();</script>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

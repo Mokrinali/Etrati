@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QDial
                                QMessageBox, QPushButton, QRadioButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
-from . import files
+from . import files, theme
 from .client import EngineClient, TaskError, run_task
 
 PDF_FILTER = "PDF ფაილები (*.pdf)"
@@ -127,6 +127,7 @@ class MergeDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                               | QDialogButtonBox.StandardButton.Cancel)
         self.ok = bb.button(QDialogButtonBox.StandardButton.Ok)
+        theme.variant(self.ok, "primary")
         self.ok.setText("გაერთიანება…")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
         bb.accepted.connect(self.merge)
@@ -268,6 +269,7 @@ class SplitDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                               | QDialogButtonBox.StandardButton.Cancel)
         self.ok = bb.button(QDialogButtonBox.StandardButton.Ok)
+        theme.variant(self.ok, "primary")
         self.ok.setText("საქაღალდის არჩევა…")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
         bb.accepted.connect(self.accept)
@@ -341,6 +343,7 @@ class CropDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                               | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("ჩამოჭრა")
+        theme.variant(bb.button(QDialogButtonBox.StandardButton.Ok), "primary")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
@@ -373,6 +376,7 @@ class InsertDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                               | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("ჩასმა")
+        theme.variant(bb.button(QDialogButtonBox.StandardButton.Ok), "primary")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
         bb.accepted.connect(self._check)
         bb.rejected.connect(self.reject)

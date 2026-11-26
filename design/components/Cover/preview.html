@@ -1,0 +1,68 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>ეტრატი</title>
+<link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;500;600&display=swap">
+<style>
+  html, body { margin:0; height:100%; }
+  body { background:var(--surface-100); color:var(--ink); font-family:var(--font-sans); overflow:hidden; }
+  .cover { position:relative; width:960px; height:288px; overflow:hidden; }
+  .art { position:absolute; top:0; left:480px; width:480px; height:288px; overflow:hidden; }
+  .art svg { display:block; }
+  .brand { fill:var(--brand); }
+  .tint { fill:var(--brand-soft); }
+  .deep { fill:var(--ink); }
+  .hl { fill:var(--mark-highlight); }
+  .blk { rx:var(--radius-lg); }
+  .bar { rx:var(--radius-xs); }
+  .lf { fill:var(--brand); }
+  .lf.cut { fill:var(--brand-soft); }
+  .words { position:absolute; left:var(--space-6); bottom:var(--space-6); max-width:440px; }
+  .name { margin:0; font-family:var(--font-sans); font-size:104px; line-height:.95; font-weight:600; color:var(--ink); }
+  .tag { margin:var(--space-3) 0 0 4px; font-size:14px; line-height:20px; color:var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 480 288" width="480" height="288">
+<!--
+  blocks      brand 144×256 slab bled off the top (the logo red, largest) · brand-soft 160×168 (tint) · ink 136×200 bleeding off the right edge · mark-highlight 96×12 strip once (the highlighter, the app's most-used mark) — ≈38% of 960×288
+  arrangement one tall brand slab with satellites, bottoms on one line space-6 above the edge, space-4 gutters
+  pattern     literal motif (leaf, from the logo: ფურცელი = leaf/sheet): lens leaves built from two radius arcs, 24px at a space-6 pitch thinning upward over the tint, four 32px leaves cut into the slab in brand-soft
+  scales      sides in space-4 multiples; gutters space-4; pitch space-6 (32); block corners radius-lg, strip radius-xs
+-->
+<rect class="brand blk" x="24" y="-16" width="144" height="256" rx="12"/>
+<rect class="tint blk" x="184" y="72" width="160" height="168" rx="12"/>
+<rect class="deep blk" x="360" y="40" width="136" height="200" rx="12"/>
+<rect class="hl bar" x="24" y="252" width="96" height="12" rx="4"/>
+<path class="lf" transform="translate(192,208)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(224,208)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(256,208)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(288,208)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(320,208)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(192,176)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(224,176)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(256,176)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(288,176)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(192,144)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(256,144)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(224,112)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf" transform="translate(192,80)" d="M0 24 A24 24 0 0 1 24 0 A24 24 0 0 1 0 24 Z"/>
+<path class="lf cut" transform="translate(40,184)" d="M0 32 A32 32 0 0 1 32 0 A32 32 0 0 1 0 32 Z"/>
+<path class="lf cut" transform="translate(72,152)" d="M0 32 A32 32 0 0 1 32 0 A32 32 0 0 1 0 32 Z"/>
+<path class="lf cut" transform="translate(104,120)" d="M0 32 A32 32 0 0 1 32 0 A32 32 0 0 1 0 32 Z"/>
+<path class="lf cut" transform="translate(56,88)" d="M0 32 A32 32 0 0 1 32 0 A32 32 0 0 1 0 32 Z"/>
+</svg>
+</div>
+<div class="words">
+<h1 class="name">ეტრატი</h1>
+<p class="tag">PDF რედაქტორი — ქართულად, თქვენს კომპიუტერზე.</p>
+</div>
+</div>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

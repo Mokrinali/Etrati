@@ -1,0 +1,20 @@
+<!-- @dsCard group="Panels" height=470 -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head><meta charset="utf-8"><title>AiPanel</title><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script></head>
+<body>
+<div style="display:flex;justify-content:flex-end;background:var(--canvas);height:470px"><div class="et-ai">
+<div class="et-ai-head" data-i="ai">AI ასისტენტი<span style="margin-left:auto" class="et-row"><button class="et-btn is-sm is-ghost">ახალი</button><button class="et-btn is-sm is-ghost">პარამეტრები…</button></span></div>
+<div class="et-msgs">
+<div class="et-msg is-note">„ხელშეკრულება.pdf“-ის ტექსტი Anthropic-ს გაეგზავნება მხოლოდ კითხვისას.</div>
+<div class="et-msg is-me">რა ვადაა ხელშეკრულებაში?</div>
+<div class="et-msg is-ai">სამუშაოს ვადაა 30 კალენდარული დღე <span class="et-cite">[გვ. 2]</span>, ხელმოწერიდან <span class="et-cite">[გვ. 1]</span>.</div>
+<div class="et-msg is-error"><b>შეცდომა.</b> ინტერნეტთან კავშირი ვერ დამყარდა.</div>
+</div>
+<div class="et-ai-in et-col" style="gap:8px"><div class="et-input" style="height:auto;min-height:56px;align-items:flex-start;padding-top:6px"><input placeholder="კითხვა დოკუმენტზე"></div>
+<div class="et-row"><span class="et-ai-cost">დახარჯულია დაახლოებით $0.012</span><span style="margin-left:auto" class="et-row"><button class="et-btn is-sm">შეჯამება</button><button class="et-btn is-sm is-primary">გაგზავნა</button></span></div></div>
+</div></div>
+<script>window.Etrati.icons();</script>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

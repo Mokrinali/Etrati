@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QFileDialog, QFormLayout
                                QPushButton, QSpinBox, QStackedWidget, QTabWidget, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
-from . import APP_NAME, DATA_ID, __version__, files
+from . import APP_NAME, DATA_ID, __version__, files, theme
 from .ai import AiPanel
 from .batch import BatchDialog
 from .client import EngineClient, TaskError, finish_all, run_task
@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
             a.setToolTip(f"{text} ({QKeySequence(keys[0]).toString()})")
         if icon:
             a.setIcon(glyph(icon, self.palette().color(QPalette.ColorRole.WindowText)))
+            self._glyphs.append((a, icon))
         if needs_doc:
             self._doc_actions.append(a)
         self.addAction(a)
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
         return a
 
     def _actions(self):
+        self._glyphs: list[tuple[QAction, int]] = []
         self._edit_actions: list[QAction] = []
         self._doc_actions: list[QAction] = []
         d = self._with_view
@@ -434,7 +436,38 @@ class MainWindow(QMainWindow):
         v.addActions([self.a_two, self.a_rot, self.a_side, self.a_full])
         v.addSeparator()
         v.addActions([self.a_pgup, self.a_pgdn, self.a_goto])
+        v.addSeparator()
+        menu = v.addMenu("თემა")
+        group = QActionGroup(self)
+        self.theme_actions = {}
+        now = self.settings.value("theme", "light")
+        for mode, text in (("light", "ქაღალდი"), ("dark", "ღამე"), ("system", "სისტემის მიხედვით")):
+            a = QAction(text, self, checkable=True)
+            a.setChecked(mode == now)
+            a.triggered.connect(lambda _=False, m=mode: self.set_theme(m))
+            group.addAction(a)
+            menu.addAction(a)
+            self.theme_actions[mode] = a
         mb.addMenu("დახმარება").addAction(self.a_about)
+
+    def set_theme(self, mode):
+        """Puts a theme on the program and remembers it."""
+        from PySide6.QtWidgets import QApplication
+        self.settings.setValue("theme", mode)
+        if mode in self.theme_actions:
+            self.theme_actions[mode].setChecked(True)
+        theme.apply_theme(QApplication.instance(), mode)
+        self.repaint_theme()
+
+    def repaint_theme(self):
+        ink = self.palette().color(QPalette.ColorRole.WindowText)
+        for a, code in self._glyphs:
+            a.setIcon(glyph(code, ink))
+        for d in self._docs():
+            d.view.viewport().update()
+            for w in (getattr(d, "list", None), getattr(d, "grid", None)):
+                if w is not None:
+                    w.viewport().update()
 
     def _fill_page_menu(self, menu):
         for a in self.page_actions:
@@ -487,14 +520,15 @@ class MainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title = QLabel(APP_NAME)
+        title = QLabel("ეტრატი")  # design: the name in Georgian, display style
         f = title.font()
-        f.setPointSize(26)
+        f.setFamilies(["Noto Sans Georgian SemiBold", "Noto Sans Georgian", "Sylfaen"])
+        f.setPixelSize(40)
         title.setFont(f)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint = QLabel("გახსენით PDF ფაილი ან ჩააგდეთ ამ ფანჯარაში")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn = QPushButton("ფაილის გახსნა…")
+        btn = theme.variant(QPushButton("ფაილის გახსნა…"), "primary")
         btn.setMinimumHeight(38)
         btn.clicked.connect(self.choose_files)
         btn3 = QPushButton("PDF სხვა ფაილებისგან…")
@@ -560,7 +594,7 @@ class MainWindow(QMainWindow):
         doc.pageMenu.connect(self._page_menu)
         doc.openRequested.connect(self.open_file)
         doc.author = self.settings.value("author", "")
-        doc.view.tool_color = QColor(self.settings.value("color", "#d02020"))
+        doc.view.tool_color = QColor(self.settings.value("color", theme.color("ink-pen").name()))
         self._organizer_bar(doc)
         i = self.tabs.addTab(doc, os.path.basename(path))
         self.tabs.setTabToolTip(i, path)
@@ -592,6 +626,7 @@ class MainWindow(QMainWindow):
                           parent=self)
         yes = box.addButton("შენახვა", QMessageBox.ButtonRole.AcceptRole)
         no = box.addButton("არ შეინახო", QMessageBox.ButtonRole.DestructiveRole)
+        theme.variant(no, "danger")
         box.addButton("გაუქმება", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(yes)
         box.exec()

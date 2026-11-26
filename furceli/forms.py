@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDia
                                QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from . import files
+from . import files, theme
 from .client import TaskError, run_task
 from .dialogs import error_text
 
@@ -21,10 +21,11 @@ def _rgb(c: QColor):
     return (round(c.redF(), 4), round(c.greenF(), 4), round(c.blueF(), 4))
 
 
-def _buttons(dlg, ok="კარგი", check=None):
+def _buttons(dlg, ok="კარგი", check=None, kind="primary"):
     bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                           | QDialogButtonBox.StandardButton.Cancel)
     bb.button(QDialogButtonBox.StandardButton.Ok).setText(ok)
+    theme.variant(bb.button(QDialogButtonBox.StandardButton.Ok), kind)
     bb.button(QDialogButtonBox.StandardButton.Cancel).setText("გაუქმება")
     bb.accepted.connect(check or dlg.accept)
     bb.rejected.connect(dlg.reject)
@@ -318,7 +319,7 @@ class ScrubDialog(QDialog):
                       "ისინი რჩება. სარეზერვო ასლებში ეს ყველაფერი რჩება. შენახვის შემდეგ პროგრამა შემოგთავაზებთ მათ წაშლას.")
         note.setWordWrap(True)
         lay.addWidget(note)
-        lay.addWidget(_buttons(self, "წაშლა"))
+        lay.addWidget(_buttons(self, "წაშლა", kind="danger"))
 
     def options(self):
         return {k: b.isChecked() for k, b in self._boxes.items()}
@@ -449,7 +450,7 @@ class _Canvas(QWidget):
 
     def draw(self, p, k):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor("#10206a"), 2.6 * k, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+        p.setPen(QPen(theme.color("ink-signature"), 2.6 * k, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                       Qt.PenJoinStyle.RoundJoin))
         for s in self.strokes:
             for a, b in zip(s, s[1:]):
@@ -560,7 +561,7 @@ class SignaturePad(QDialog):
         p = QPainter(img)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setFont(font)
-        p.setPen(QColor("#10206a"))
+        p.setPen(theme.color("ink-signature"))
         p.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, text)
         p.end()
         return img

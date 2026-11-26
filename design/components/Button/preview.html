@@ -1,0 +1,24 @@
+<!-- @dsCard group="Actions" height=120 -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head><meta charset="utf-8"><title>Button</title><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script></head>
+<body>
+<div class="et-pad et-col">
+<div class="et-row">
+<button class="et-btn is-primary">შენახვა</button>
+<button class="et-btn">არ შეინახო</button>
+<button class="et-btn is-ghost">გაუქმება</button>
+<button class="et-btn is-danger" data-i="trash">სამუდამოდ წაშლა</button>
+<button class="et-btn" disabled>გათიშული</button>
+</div>
+<div class="et-row">
+<button class="et-btn is-lg is-primary" data-i="open">ფაილის გახსნა…</button>
+<button class="et-btn" data-i="merge">ფაილების გაერთიანება…</button>
+<button class="et-btn is-sm" data-i="left">წინა</button>
+<button class="et-btn is-sm">შემდეგი</button>
+</div>
+</div>
+<script>window.Etrati.icons();</script>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

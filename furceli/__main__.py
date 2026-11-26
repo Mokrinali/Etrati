@@ -40,14 +40,23 @@ def main() -> int:
     if given:
         return 0
 
-    from furceli.window import MainWindow
+    from furceli import theme
+    from furceli.window import MainWindow, make_settings
 
     app.setApplicationName(APP_ID)
     app.setApplicationDisplayName(APP_NAME)
     app.setStyle("Fusion")
+    mode = make_settings().value("theme", "light")
+    theme.apply_theme(app, mode)
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "assets", "furceli.ico")))
     files.sweep_sessions()
     win = MainWindow()
+
+    def follow_system(*_):
+        if win.settings.value("theme", "light") == "system":
+            theme.apply_theme(app, "system")
+            win.repaint_theme()
+    app.styleHints().colorSchemeChanged.connect(follow_system)
     receiver = single.Receiver(parent=win)
 
     def take(new):

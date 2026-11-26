@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBox
                                QListWidget, QListWidgetItem, QMessageBox, QProgressDialog,
                                QPushButton, QSplitter, QVBoxLayout, QWidget)
 
-from . import files
+from . import files, theme
 from .client import EngineClient, TaskError, run_task
 from .convert_names import IMAGES
 from .dialogs import PDF_FILTER, error_text, inspect_file, warn_unprotected
@@ -83,10 +83,10 @@ class CornerView(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.drawImage(self._box(), self.image)
         pts = self._pts()
-        p.setPen(QPen(QColor("#2f7de1"), 2))
-        p.setBrush(QColor(47, 125, 225, 28))
+        p.setPen(QPen(theme.color("mark-crop"), 2))
+        p.setBrush(theme.color("mark-crop-fill"))
         p.drawPolygon(QPolygonF(pts))
-        p.setBrush(QColor("white"))
+        p.setBrush(theme.color("paper"))
         for i, q in enumerate(pts):
             p.drawEllipse(q, 9 if i == self._drag else 7, 9 if i == self._drag else 7)
 
@@ -211,7 +211,7 @@ class ScanDialog(QDialog):
             opts.addWidget(QLabel(text))
             opts.addWidget(w)
         opts.addStretch()
-        self.go = self._button("PDF-ის შექმნა…", self.create)
+        self.go = theme.variant(self._button("PDF-ის შექმნა…", self.create), "primary")
         opts.addWidget(self.go)
         opts.addWidget(self._button("დახურვა", self.reject))
         lay.addLayout(opts)

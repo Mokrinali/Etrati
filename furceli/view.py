@@ -14,6 +14,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QAbstractScrollArea
 
+from . import theme
 from .client import P_TEXT, P_VISIBLE
 
 TILE = 1024
@@ -73,7 +74,7 @@ class PageView(QAbstractScrollArea):
         self._crop = None                  # None, or [page, start point, end point]
         self.cropping = False
         self.tool = "select"
-        self.tool_color = QColor("#d02020")
+        self.tool_color = theme.color("ink-pen")
         self.tool_width = 2.0
         self._shape = None                 # [page, [points]] being drawn
         self.widgets: dict[int, list] = {}
@@ -523,7 +524,7 @@ class PageView(QAbstractScrollArea):
         p.translate(-o.x(), -o.y())
         for pno in self._visible_pages():
             r = self.rects[pno]
-            p.fillRect(r, Qt.GlobalColor.white)
+            p.fillRect(r, theme.color("paper"))
             mine = [k for k in wanted if k[1] == pno]
             if any(k not in self._tiles for k in mine):
                 thumb = self.thumbs.get(pno)
@@ -537,7 +538,7 @@ class PageView(QAbstractScrollArea):
                 if img is not None:
                     p.drawImage(QPoint(r.x() + k[4], r.y() + k[5]), img)
             if any(k in self._bad for k in mine):
-                p.setPen(QColor("#b00020"))
+                p.setPen(theme.color("mark-error"))
                 f = p.font()
                 f.setPixelSize(round(15 * self.dpr))
                 p.setFont(f)
@@ -548,19 +549,19 @@ class PageView(QAbstractScrollArea):
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
             for i, hit in enumerate(self.hits.get(pno, ())):
                 now = self.current_hit == (pno, i)
-                p.fillRect(self._doc_rect(pno, hit[0]), QColor("#ff9d3b" if now else "#fff07a"))
+                p.fillRect(self._doc_rect(pno, hit[0]), theme.color("mark-current" if now else "mark-highlight"))
             for rect in self._selected_rects(pno):
-                p.fillRect(self._doc_rect(pno, rect), QColor("#a9cdfb"))
+                p.fillRect(self._doc_rect(pno, rect), theme.color("mark-selection"))
             for rect in self.diff.get(pno, ()):
-                p.fillRect(self._doc_rect(pno, rect), QColor("#b8f0b0"))
+                p.fillRect(self._doc_rect(pno, rect), theme.color("mark-edit"))
             for w in self.widgets.get(pno, ()):
                 if not w["readonly"] and w["kind"] != "other":
-                    p.fillRect(self._doc_rect(pno, w["rect"]), QColor("#e3ecff"))
+                    p.fillRect(self._doc_rect(pno, w["rect"]), theme.color("mark-field"))
             p.restore()
             for rect in self.marks.get(pno, ()):
                 box = self._doc_rect(pno, rect)
                 p.fillRect(box, QColor(0, 0, 0, 70))
-                p.setPen(QPen(QColor("#c00000"), 2))
+                p.setPen(QPen(theme.color("mark-redact"), 2))
                 p.drawRect(box)
             if self._shape and self._shape[0] == pno:
                 self._paint_shape(p)
@@ -576,7 +577,7 @@ class PageView(QAbstractScrollArea):
                                   keep.height()), shade)
                 p.fillRect(QRectF(keep.right(), keep.top(), full.right() - keep.right(),
                                   keep.height()), shade)
-                p.setPen(QPen(QColor("#2f7de1"), 2))
+                p.setPen(QPen(theme.color("mark-crop"), 2))
                 p.drawRect(keep)
             p.setPen(QPen(QColor(0, 0, 0, 60), 1))
             p.drawRect(r.adjusted(-1, -1, 0, 0))
