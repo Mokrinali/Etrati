@@ -37,3 +37,4 @@ build-share-work/
 # never in the repository
 .elevenlabs-key
 video-guide/
+build-share-work.log

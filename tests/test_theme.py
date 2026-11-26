@@ -40,3 +40,22 @@ def test_no_hard_coded_screen_colours():
             with open(os.path.join(ROOT, "furceli", name), encoding="utf-8") as f:
                 found += [(name, m) for m in re.findall(r'QColor\("#[0-9a-fA-F]+"\)', f.read())]
     assert found == [("window.py", 'QColor("#fffbe8")')]  # the page background written into the file
+
+
+def test_message_icons_in_coloured_circles(app):  # noqa: F811
+    """design/components/Dialog: warning, danger and info icons on their soft colours."""
+    from PySide6.QtWidgets import QApplication, QStyle
+    a = QApplication.instance()
+    theme.apply_theme(a, "light")
+    style = a.style()
+    for sp, soft in ((QStyle.StandardPixmap.SP_MessageBoxWarning, "warning-soft"),
+                     (QStyle.StandardPixmap.SP_MessageBoxCritical, "danger-soft"),
+                     (QStyle.StandardPixmap.SP_MessageBoxInformation, "info-soft"),
+                     (QStyle.StandardPixmap.SP_MessageBoxQuestion, "info-soft")):
+        img = style.standardIcon(sp).pixmap(36, 36).toImage()
+        edge = img.pixelColor(img.width() // 2, 3)  # just inside the circle, above the sign
+        want = theme.color(soft)
+        assert abs(edge.red() - want.red()) < 12 and abs(edge.blue() - want.blue()) < 12, sp
+    first = a.style()
+    theme.apply_theme(a, "light")  # stays one style, not wrapped again
+    assert a.property("etrati_style") and a.style() is first

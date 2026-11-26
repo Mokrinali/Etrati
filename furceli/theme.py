@@ -126,11 +126,53 @@ def style_sheet() -> str:
     return re.sub(r"\{([a-z0-9-]+)\}", lambda m: values.get(m.group(1), m.group(0)), qss)
 
 
+def _message_icon(sign: int, soft: str, ink: str):
+    """A sign of the symbol font on a soft circle (design/components/Dialog)."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QIcon, QPainter, QPixmap
+    pix = QPixmap(72, 72)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color(soft))
+    p.drawEllipse(QRectF(0, 0, 72, 72))
+    f = QFont()
+    f.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+    f.setPixelSize(36)
+    p.setFont(f)
+    p.setPen(color(ink))
+    p.drawText(QRectF(0, 0, 72, 72), Qt.AlignmentFlag.AlignCenter, chr(sign))
+    p.end()
+    return QIcon(pix)
+
+
+def _style():
+    from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleFactory
+
+    class EtratiStyle(QProxyStyle):
+        """Fusion, with the message box icons of the design in the theme's colours."""
+        SIGNS = {QStyle.StandardPixmap.SP_MessageBoxWarning: (0xE7BA, "warning-soft", "warning"),
+                 QStyle.StandardPixmap.SP_MessageBoxCritical: (0xEA39, "danger-soft", "danger"),
+                 QStyle.StandardPixmap.SP_MessageBoxInformation: (0xE946, "info-soft", "info"),
+                 QStyle.StandardPixmap.SP_MessageBoxQuestion: (0xE9CE, "info-soft", "info")}
+
+        def standardIcon(self, sp, option=None, widget=None):
+            if sp in self.SIGNS:
+                return _message_icon(*self.SIGNS[sp])
+            return super().standardIcon(sp, option, widget)
+
+    return EtratiStyle(QStyleFactory.create("Fusion"))
+
+
 def apply_theme(app, mode: str = "light") -> str:
     """Puts a theme on the whole program; returns the one now on screen."""
     global _now
     _load()
     _now = resolve(mode)
+    if not app.property("etrati_style"):  # a style sheet hides the style's own class
+        app.setStyle(_style())
+        app.setProperty("etrati_style", True)
     load_fonts(app)
     app.setPalette(palette())
     app.setStyleSheet(style_sheet())
