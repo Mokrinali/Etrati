@@ -101,3 +101,22 @@ def test_drawn_icons(win):  # noqa: F811
     assert win.a_rot not in win.toolbar.actions() and not win.a_save.icon().isNull()
     doc_buttons = ("chevron-left", "chevron-right", "arrow-up", "arrow-down")
     assert all(os.path.exists(os.path.join(folder, n + ".svg")) for n in doc_buttons)
+
+
+def test_banner_over_the_document(win, tmp_path):  # noqa: F811
+    doc = open_doc(win, build(tmp_path / "b.pdf"))
+    said, ran = [], []
+    doc.status.connect(said.append)
+    win.statusBar().clearMessage()
+    doc.notify("info", "ტექსტი არ არის.", "ამოცნობა…", lambda: ran.append(1))
+    b = doc.banner
+    assert not b.isHidden() and b.property("kind") == "info" and b.link.isVisibleTo(b)
+    assert said == ["ტექსტი არ არის."] and win.statusBar().currentMessage() == ""  # shown once
+    b.link.click()
+    assert ran == [1] and b.isHidden()
+    doc.notify("danger", "ვერ შესრულდა.")
+    assert not b.link.isVisibleTo(b)
+    b.close_btn.click()
+    assert b.isHidden() and b.message() == ""
+    doc.status.emit("შენახულია.")
+    assert win.statusBar().currentMessage() == "შენახულია."  # short news stay in the status bar

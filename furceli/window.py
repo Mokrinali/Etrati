@@ -519,6 +519,7 @@ class MainWindow(QMainWindow):
         self.swatches.update()
         self.welcome.recolor()
         for d in self._docs():
+            d.banner.recolor()
             d.view.viewport().update()
             for w in (getattr(d, "list", None), getattr(d, "grid", None)):
                 if w is not None:
@@ -617,7 +618,8 @@ class MainWindow(QMainWindow):
             d is not doc and os.path.normcase(d.path) == os.path.normcase(p) for d in self._docs())
         doc.ready.connect(lambda: self._ready(doc))
         doc.closed.connect(lambda msg: self._open_failed(doc, msg))
-        doc.status.connect(lambda m: self.statusBar().showMessage(m, 8000))
+        doc.status.connect(lambda m, d=doc: None if m == d.banner.message()
+                           else self.statusBar().showMessage(m, 8000))  # once is enough
         doc.view.pageChanged.connect(lambda *_: self._sync())
         doc.view.zoomChanged.connect(lambda *_: self._sync())
         doc.view.hovered.connect(lambda t: self.link_label.setText(

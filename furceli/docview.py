@@ -19,6 +19,7 @@ from .client import (P_OPEN, P_SEARCH, P_THUMB, EngineClient, TaskError, _blocki
 from .dialogs import (PDF_FILTER, CropDialog, InsertDialog, SplitDialog, error_text, inspect_file,
                       warn_unprotected)
 from .engine import IN_MEMORY_LIMIT
+from .banner import Banner
 from .thumbs import RENDER_H, RENDER_W, ThumbList, Thumbs
 from .tools import CommentsPanel, ToolsMixin
 from .view import PageView, to_image
@@ -81,9 +82,16 @@ class DocView(ToolsMixin, QWidget):
         self.center = QStackedWidget()
         self.center.addWidget(self.view)
         self.center.addWidget(self.organizer)
+        self.banner = Banner()
+        right = QWidget()
+        col = QVBoxLayout(right)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.banner)
+        col.addWidget(self.center, 1)
         self.splitter = QSplitter()
         self.splitter.addWidget(self.sidebar)
-        self.splitter.addWidget(self.center)
+        self.splitter.addWidget(right)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([250, 900])
         self.loading = QLabel("იხსნება…")
@@ -113,7 +121,13 @@ class DocView(ToolsMixin, QWidget):
         self.view.setFocus()
         self.ready.emit()
         if info["repaired"]:
-            self.status.emit("ფაილი დაზიანებული იყო და გასწორებული სახით გაიხსნა. ორიგინალი არ შეცვლილა.")
+            self.notify("warning", "ფაილი დაზიანებული იყო და გასწორებული სახით გაიხსნა. "
+                                   "ორიგინალი არ შეცვლილა.")
+
+    def notify(self, kind, text, action_text="", action=None):
+        """A message over the document that stays until it is closed; also in the status bar."""
+        self.banner.show_message(kind, text, action_text, action)
+        self.status.emit(text)
 
     def _ask_password(self, wrong):
         text = ("პაროლი არასწორია. სცადეთ ხელახლა:" if wrong
@@ -164,10 +178,10 @@ class DocView(ToolsMixin, QWidget):
         elif kind in ("edit", "undo", "redo", "restore"):
             self._edit_failed(kind, code)
         if kind in CONTENT and code in ("crash", "engine_dead"):
-            self.status.emit(error_text(code))
+            self.notify("danger", error_text(code))
         elif code == "file_changed" and not self.broken:
             self.broken = True  # what is shown and what is on the disk no longer agree
-            self.status.emit(error_text(code))
+            self.notify("danger", error_text(code))
             self.changed.emit()
 
     def close_document(self):
@@ -611,8 +625,8 @@ class DocView(ToolsMixin, QWidget):
             self.view.marks = {}
         self.view.reload(self.sizes, mapping, still=bool(last) and last not in self.MOVES)
         if self.view.lost_marks:
-            self.status.emit(f"დასაფარად მონიშნული {self.view.lost_marks} ადგილი მოიხსნა: გვერდი შეიცვალა. "
-                             "მონიშნეთ თავიდან.")
+            self.notify("warning", f"დასაფარად მონიშნული {self.view.lost_marks} ადგილი მოიხსნა: "
+                                   "გვერდი შეიცვალა. მონიშნეთ თავიდან.")
         if mapping is not None and len(mapping) == self.list.model_.rows:
             for lst in (self.list, self.grid):  # same pages: refresh without losing scroll
                 for p, o in enumerate(mapping):

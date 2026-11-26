@@ -424,7 +424,8 @@ class ToolsMixin:
             if d < 6 and (best is None or d < best[0]):
                 best = (d, ln)
         if best is None:
-            self.status.emit("აქ ტექსტი არ არის. დასკანერებულ გვერდს ჯერ OCR სჭირდება.")
+            self.notify("info", "აქ ტექსტი არ არის. დასკანერებულ გვერდს ჯერ ტექსტის ამოცნობა სჭირდება (OCR).",
+                        "ამოცნობა…", self.ocr)
             return
         ln = best[1]
         dlg = LineDialog(ln, self)
