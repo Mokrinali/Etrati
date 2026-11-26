@@ -122,6 +122,7 @@ def style_sheet() -> str:
     values["check"] = os.path.join(ASSETS, "check.svg").replace("\\", "/")
     close = os.path.join(ASSETS, f"close-{_now}.svg")
     values["close"] = close.replace("\\", "/")
+    values["chevron"] = os.path.join(ASSETS, f"chevron-{_now}.svg").replace("\\", "/")
     return re.sub(r"\{([a-z0-9-]+)\}", lambda m: values.get(m.group(1), m.group(0)), qss)
 
 

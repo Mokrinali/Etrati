@@ -68,3 +68,22 @@ def test_sidebar_looks(win, tmp_path):  # noqa: F811
     red = sum(1 for y in range(0, img.height(), 2) for x in range(0, img.width(), 2)
               if img.pixelColor(x, y).red() > 180 and img.pixelColor(x, y).green() < 70)
     assert red > 40
+
+
+def test_colour_circles(win, tmp_path):  # noqa: F811
+    from PySide6.QtGui import QColor
+    sw = win.swatches
+    assert len(sw.buttons) == 6 and sw.buttons[0].isChecked()  # the pen colour by default
+    doc = open_doc(win, build(tmp_path / "c.pdf"))
+    sw.buttons[3].click()
+    assert doc.view.tool_color.name() == sw.buttons[3].color.name()
+    assert win.settings.value("color") == sw.buttons[3].color.name()
+    assert [b.isChecked() for b in sw.buttons] == [False, False, False, True, False, False]
+    win._set_color(QColor(10, 200, 30))  # a colour of one's own: no circle is chosen
+    assert not any(b.isChecked() for b in sw.buttons)
+    assert win.a_color.isEnabled()
+
+
+def test_toolbar_fields_show_their_numbers(win, tmp_path):  # noqa: F811
+    open_doc(win, build(tmp_path / "f.pdf"))
+    assert win.page_box.lineEdit().width() > 20 and win.page_box.text() == "1"

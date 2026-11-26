@@ -20,6 +20,7 @@ from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
 from .scan_dialog import ScanDialog
+from .swatches import ColorSwatches
 from .welcome import DropFrame, WelcomeScreen
 from .docview import DocView
 from .printing import PrintError, choose_and_print
@@ -35,8 +36,17 @@ def make_settings() -> QSettings:
     return QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, DATA_ID, DATA_ID)
 
 
-def glyph(code: int, color: QColor) -> QIcon:
-    """Icon from the Windows symbol font (Windows 11, then Windows 10 name)."""
+def glyph(code: int, color: QColor, on: QColor | None = None) -> QIcon:
+    """Icon from the Windows symbol font (Windows 11, then Windows 10 name).
+
+    on: the colour while the button is checked."""
+    icon = QIcon(_glyph_pixmap(code, color))
+    if on is not None:
+        icon.addPixmap(_glyph_pixmap(code, on), QIcon.Mode.Normal, QIcon.State.On)
+    return icon
+
+
+def _glyph_pixmap(code: int, color: QColor) -> QPixmap:
     pix = QPixmap(64, 64)
     pix.fill(Qt.GlobalColor.transparent)
     f = QFont()
@@ -48,7 +58,7 @@ def glyph(code: int, color: QColor) -> QIcon:
     p.setPen(color)
     p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, chr(code))
     p.end()
-    return QIcon(pix)
+    return pix
 
 
 class MainWindow(QMainWindow):
@@ -94,12 +104,16 @@ class MainWindow(QMainWindow):
             a.setShortcuts([QKeySequence(k) for k in keys])
             a.setToolTip(f"{text} ({QKeySequence(keys[0]).toString()})")
         if icon:
-            a.setIcon(glyph(icon, self.palette().color(QPalette.ColorRole.WindowText)))
             self._glyphs.append((a, icon))
+            self._paint_icon(a, icon)
         if needs_doc:
             self._doc_actions.append(a)
         self.addAction(a)
         return a
+
+    def _paint_icon(self, a, code):
+        ink = self.palette().color(QPalette.ColorRole.WindowText)
+        a.setIcon(glyph(code, ink, theme.color("brand-text") if a.isCheckable() else None))
 
     def _edit_action(self, text, fn, key=None, icon=None):
         a = self._act(text, lambda: self.doc and fn(self.doc), key, icon)
@@ -127,8 +141,9 @@ class MainWindow(QMainWindow):
         self.a_out = self._act("დაპატარავება", d(lambda v: v.set_zoom(v.zoom / 1.2)),
                                "Ctrl+-", 0xE71F)
         self.a_100 = self._act("რეალური ზომა (100%)", d(lambda v: v.set_zoom(1.0)), "Ctrl+1")
-        self.a_width = self._act("სიგანეზე მორგება", d(lambda v: v.set_fit("width")), "Ctrl+2")
-        self.a_page = self._act("მთელი გვერდი", d(lambda v: v.set_fit("page")), "Ctrl+0")
+        self.a_width = self._act("სიგანეზე მორგება", d(lambda v: v.set_fit("width")), "Ctrl+2",
+                                 0xE9A6)
+        self.a_page = self._act("მთელი გვერდი", d(lambda v: v.set_fit("page")), "Ctrl+0", 0xE799)
         self.a_rot = self._act("ხედის მობრუნება", d(lambda v: v.rotate()), "Ctrl+R", 0xE7AD)
         self.a_two = self._act("ორი გვერდი გვერდიგვერდ", self._two_up, "Ctrl+Shift+2", 0xE89A,
                                checkable=True)
@@ -192,7 +207,7 @@ class MainWindow(QMainWindow):
         self.tool_acts["select"].setChecked(True)
         d = lambda fn: (lambda: self.doc and fn(self.doc))  # noqa: E731
         act = self._act
-        self.a_color = act("ფერი…", self._pick_color, icon=0xE790)
+        self.a_color = act("ფერი…", self._pick_color, icon=0xE790, needs_doc=False)
         self.a_sigpic = act("ხელმოწერის სურათი…", d(lambda x: x.place_signature()), icon=0xE929)
         self.a_flat = act("კომენტარების და ველების გაერთიანება გვერდთან…", d(lambda x: x.flatten()))
         self.a_author = act("კომენტარის ავტორის სახელი…", self._set_author, needs_doc=False)
@@ -235,11 +250,16 @@ class MainWindow(QMainWindow):
             self.doc.set_tool(name)
 
     def _pick_color(self):
-        c = QColorDialog.getColor(self.doc.view.tool_color, self, "ფერი")
+        start = QColor(self.settings.value("color", theme.color("ink-pen").name()))
+        c = QColorDialog.getColor(self.doc.view.tool_color if self.doc else start, self, "ფერი")
         if c.isValid():
-            for d in self._docs():
-                d.view.tool_color = c
-            self.settings.setValue("color", c.name())
+            self._set_color(c)
+
+    def _set_color(self, c):
+        for d in self._docs():
+            d.view.tool_color = QColor(c)
+        self.settings.setValue("color", QColor(c).name())
+        self.swatches.show_color(c)
 
     def _background(self):
         c = QColorDialog.getColor(QColor("#fffbe8"), self, "ფონის ფერი")
@@ -355,7 +375,7 @@ class MainWindow(QMainWindow):
         self.page_box = QSpinBox()
         self.page_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.page_box.setKeyboardTracking(False)
-        self.page_box.setMinimumWidth(56)
+        self.page_box.setFixedSize(56, 28)
         self.page_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_box.valueChanged.connect(self._page_typed)
         self.page_total = QLabel(" / 0 ")
@@ -367,7 +387,7 @@ class MainWindow(QMainWindow):
         self.zoom_box.setEditable(True)
         self.zoom_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.zoom_box.addItems([f"{z}%" for z in ZOOMS])
-        self.zoom_box.setMinimumWidth(84)
+        self.zoom_box.setFixedSize(84, 28)
         self.zoom_box.activated.connect(lambda *_: self._zoom_typed())
         self.zoom_box.lineEdit().returnPressed.connect(self._zoom_typed)
         tb.addWidget(self.zoom_box)
@@ -386,7 +406,17 @@ class MainWindow(QMainWindow):
                 t2.addSeparator()
             t2.addAction(self.tool_acts[name])
         t2.addSeparator()
-        t2.addActions([self.a_sigpic, self.a_color])
+        t2.addAction(self.a_sigpic)
+        self.swatches = ColorSwatches()
+        self.swatches.picked.connect(self._set_color)
+        self.swatches.show_color(QColor(self.settings.value("color", theme.color("ink-pen").name())))
+        t2.addWidget(self.swatches)
+        self.a_color.setText("სხვა ფერი…")
+        self.a_color.setIcon(QIcon())
+        self._glyphs = [(a, c) for a, c in self._glyphs if a is not self.a_color]
+        self._paint_icon(self.a_color, 0xE710)  # +
+        self._glyphs.append((self.a_color, 0xE710))
+        t2.addAction(self.a_color)
 
     def _menus(self):
         mb = self.menuBar()
@@ -465,7 +495,8 @@ class MainWindow(QMainWindow):
     def repaint_theme(self):
         ink = self.palette().color(QPalette.ColorRole.WindowText)
         for a, code in self._glyphs:
-            a.setIcon(glyph(code, ink))
+            self._paint_icon(a, code)
+        self.swatches.update()
         self.welcome.recolor()
         for d in self._docs():
             d.view.viewport().update()

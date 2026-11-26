@@ -401,8 +401,8 @@ def test_dialog_cancel_and_failure_leave_nothing(dialog, monkeypatch, tmp_path):
         m.setattr(QProgressDialog, "wasCanceled", lambda s: True)
         dialog.create()
     assert dialog.result_path is None and not os.path.exists(out)
-    stable(dialog)
-    assert all(p["after"] is not None for p in dialog.pages)
+    # the previews put off by the cancelled run come back
+    wait(lambda: all(p["after"] is not None for p in dialog.pages), 40)
     told = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: told.append(a[-1]))
     os.remove(dialog.pages[1]["path"])

@@ -26,7 +26,7 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTe
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { background: {surface-200}; border-color: {line}; color: {ink-disabled}; }
 QLineEdit[error="true"] { border-color: {danger}; }
 QComboBox QAbstractItemView { background: {surface-raised}; border: 1px solid {line}; selection-background-color: {brand-soft}; selection-color: {brand-text}; }
-QToolBar QSpinBox, QToolBar QComboBox { min-height: 26px; font-family: "Cascadia Mono", Consolas; font-size: 12px; }
+QToolBar QSpinBox, QToolBar QComboBox { min-height: 26px; max-height: 28px; padding: 0 6px; font-family: "Cascadia Mono", Consolas; font-size: 12px; }
 QTabBar::tab { height: 30px; padding: 0 8px 0 12px; color: {ink-muted}; background: transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; }
 QTabBar::tab:hover { background: {surface-100}; color: {ink}; }
 QTabBar::tab:selected { background: {surface-100}; color: {ink}; font-family: "Noto Sans Georgian SemiBold", "Noto Sans SemiBold", "Segoe UI Semibold"; font-weight: 400; border-top: 2px solid {brand}; }
@@ -87,3 +87,13 @@ QTabWidget#sidebar > QTabBar::tab:selected { color: {ink}; background: {surface-
 QTabWidget#sidebar > QTabBar::tab:disabled { color: {ink-disabled}; }
 QTabWidget#sidebar QListView, QTabWidget#sidebar QTreeWidget, QTabWidget#sidebar QListWidget { background: {surface-200}; border: 0; }
 QTabWidget#sidebar QListView::item:selected { background: transparent; }
+/* Toolbar (design/components/Toolbar, ToolButton) */
+QToolBar QToolButton { min-width: 32px; min-height: 32px; padding: 0; }
+QToolBar QToolButton:checked { background: {brand-soft}; }
+QToolBar QToolButton:disabled { background: transparent; }
+QToolBar QLabel { color: {ink-muted}; font-family: "Cascadia Mono", Consolas; font-size: 12px; }
+QToolBar QSpinBox { padding: 0 2px; }
+/* a styled spin box keeps room for arrows even without them: this gives it back */
+QToolBar QSpinBox::up-button, QToolBar QSpinBox::down-button { subcontrol-origin: border; width: 0px; border: 0; image: none; }
+QComboBox::drop-down { border: 0; width: 22px; }
+QComboBox::down-arrow { image: url({chevron}); width: 10px; height: 10px; }
