@@ -120,3 +120,27 @@ def test_banner_over_the_document(win, tmp_path):  # noqa: F811
     assert b.isHidden() and b.message() == ""
     doc.status.emit("შენახულია.")
     assert win.statusBar().currentMessage() == "შენახულია."  # short news stay in the status bar
+
+
+def test_ai_messages_as_bubbles(win, tmp_path):  # noqa: F811
+    from furceli import ai
+    doc = open_doc(win, build(tmp_path / "a.pdf"))
+    p = ai.AiPanel(doc, win.settings, lambda: ["x"])
+    p._say("კითხვა?", "me")
+    p._say("კავშირი ვერ დამყარდა.", "error")
+    p._say("შენიშვნა", "note")
+    text = p.log.toPlainText()
+    assert "კითხვა?" in text and "შეცდომა. კავშირი ვერ დამყარდა." in text and "შენიშვნა" in text
+    win.set_theme("dark")
+    try:
+        p.recolor()
+        assert theme_color_in(p.log.toHtml(), "danger-soft")  # drawn again in the night colours
+    finally:
+        win.set_theme("light")
+    p.reset()
+    assert p._shown == [] and not p.log.toPlainText().strip()
+
+
+def theme_color_in(html, token):
+    from furceli import theme
+    return theme.color(token).name() in html

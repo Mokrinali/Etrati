@@ -107,3 +107,9 @@ QPushButton[variant="link"] { background: transparent; border: 0; color: {brand-
 QPushButton[variant="link"]:hover { text-decoration: underline; background: transparent; }
 QFrame#banner QPushButton[variant="ghost"] { min-height: 0; padding: 0; border-radius: 4px; }
 QFrame#banner QPushButton[variant="ghost"]:hover { background: rgba(0,0,0,20); }
+/* AiPanel (design/components/AiPanel) */
+QWidget#ai { background: {surface-100}; border-left: 1px solid {line}; }
+QWidget#ai-head { border-bottom: 1px solid {line}; }
+QWidget#ai-in { border-top: 1px solid {line}; }
+QTextBrowser#ai-log { background: {surface-100}; border: 0; padding: 8px; }
+QPushButton[size="sm"] { min-height: 22px; padding: 0 6px; }

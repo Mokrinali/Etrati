@@ -520,6 +520,8 @@ class MainWindow(QMainWindow):
         self.welcome.recolor()
         for d in self._docs():
             d.banner.recolor()
+            if getattr(d, "ai", None) is not None:
+                d.ai.recolor()
             d.view.viewport().update()
             for w in (getattr(d, "list", None), getattr(d, "grid", None)):
                 if w is not None:

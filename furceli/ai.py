@@ -270,36 +270,72 @@ class AiPanel(QWidget):
         self._answer = ""
         self.spent = 0.0
         self._agreed = None
+        self._shown: list[tuple[str, str]] = []  # (kind, html): drawn again with the theme
+        self.setObjectName("ai")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        head = QHBoxLayout()
-        head.addWidget(QLabel("AI ასისტენტი"))
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        top = QWidget()
+        top.setObjectName("ai-head")
+        head = QHBoxLayout(top)
+        head.setContentsMargins(10, 6, 6, 6)
+        head.setSpacing(4)
+        self.mark = QLabel()
+        self.mark.setFixedSize(18, 18)
+        title = QLabel("AI ასისტენტი")
+        f = title.font()
+        f.setFamilies(["Noto Sans Georgian SemiBold", "Noto Sans SemiBold", "Segoe UI Semibold"])
+        title.setFont(f)
+        head.addWidget(self.mark)
+        head.addWidget(title)
         head.addStretch()
-        for text, slot in (("ახალი", self.reset), ("პარამეტრები…", self.configure)):
-            b = QPushButton(text)
-            b.clicked.connect(lambda *_, s=slot: s())
-            head.addWidget(b)
-        lay.addLayout(head)
+        new = theme.variant(QPushButton("ახალი"), "ghost")
+        new.setProperty("size", "sm")
+        new.setToolTip("ახალი საუბარი")
+        new.clicked.connect(lambda *_: self.reset())
+        self.gear = theme.variant(QPushButton(), "ghost")  # 300 px leave no room for the word
+        self.gear.setProperty("size", "sm")
+        self.gear.setFixedSize(28, 26)
+        self.gear.setToolTip("პარამეტრები…")
+        self.gear.setAccessibleName("პარამეტრები…")
+        self.gear.clicked.connect(lambda *_: self.configure())
+        head.addWidget(new)
+        head.addWidget(self.gear)
+        lay.addWidget(top)
         self.log = QTextBrowser()
+        self.log.setObjectName("ai-log")
         self.log.setOpenLinks(False)
         self.log.anchorClicked.connect(self._link)
-        lay.addWidget(self.log)
-        self.cost = QLabel("")
-        lay.addWidget(self.cost)
+        lay.addWidget(self.log, 1)
+        bottom = QWidget()
+        bottom.setObjectName("ai-in")
+        col = QVBoxLayout(bottom)
+        col.setContentsMargins(12, 12, 12, 12)
+        col.setSpacing(8)
         self.box = QPlainTextEdit()
         self.box.setPlaceholderText("კითხვა დოკუმენტზე")
         self.box.setFixedHeight(70)
-        lay.addWidget(self.box)
+        col.addWidget(self.box)
         row = QHBoxLayout()
+        self.cost = QLabel("")
+        self.cost.setProperty("role", "muted")
+        f = self.cost.font()
+        f.setPixelSize(11)
+        self.cost.setFont(f)
         self.send = theme.variant(QPushButton("გაგზავნა"), "primary")
         self._idle = True
         self.send.clicked.connect(lambda: self._send_or_stop())
         self.sum = QPushButton("შეჯამება")
         self.sum.clicked.connect(lambda: self.ask(
             "შეაჯამე ეს დოკუმენტი ქართულად: მთავარი აზრი, საკვანძო ფაქტები, თარიღები და თანხები."))
+        col.addWidget(self.cost)
+        row.addStretch()
         row.addWidget(self.sum)
         row.addWidget(self.send)
-        lay.addLayout(row)
+        col.addLayout(row)
+        lay.addWidget(bottom)
+        self.recolor()
 
     def configure(self):
         if AiSettings(self.settings, self).exec():
@@ -310,6 +346,7 @@ class AiPanel(QWidget):
             self.chat.stop()
         self.chat = None
         self.log.clear()
+        self._shown = []
         self._answer = ""
         self._enable(True)
 
@@ -341,7 +378,7 @@ class AiPanel(QWidget):
         if not question or (self.chat and self.chat.busy):
             return
         if not self.doc.info.get("can_copy", True):
-            self._say("ავტორმა ამ ფაილიდან ტექსტის კოპირება აკრძალა, ამიტომ არ ვაგზავნი.", theme.color("ink-muted").name())
+            self._say("ავტორმა ამ ფაილიდან ტექსტის კოპირება აკრძალა, ამიტომ არ ვაგზავნი.", "note")
             return
         key = load_key(self.settings)
         if not key and self._client is None:
@@ -356,14 +393,14 @@ class AiPanel(QWidget):
             if texts is None:
                 return
             if not any(t.strip() for t in texts):
-                self._say("ამ დოკუმენტში ტექსტი არ არის. დასკანერებულს ჯერ OCR სჭირდება.", theme.color("ink-muted").name())
+                self._say("ამ დოკუმენტში ტექსტი არ არის. დასკანერებულს ჯერ OCR სჭირდება.", "note")
                 return
             if sum(map(len, texts)) > MAX_CHARS:
-                self._say("დოკუმენტი ძალიან დიდია. ჯერ ამოიღეთ საჭირო გვერდები ცალკე ფაილად.", theme.color("ink-muted").name())
+                self._say("დოკუმენტი ძალიან დიდია. ჯერ ამოიღეთ საჭირო გვერდები ცალკე ფაილად.", "note")
                 return
             if self.chat is not None:
                 self.chat.stop()
-                self._say("დოკუმენტი შეიცვალა, ამიტომ საუბარი თავიდან იწყება.", theme.color("ink-muted").name())
+                self._say("დოკუმენტი შეიცვალა, ამიტომ საუბარი თავიდან იწყება.", "note")
             model = self.settings.value("ai/model", MODELS[0][1])
             self.chat = Chat(key, model, texts, self._client)
             self.chat.delta.connect(self._delta)
@@ -372,16 +409,52 @@ class AiPanel(QWidget):
             self.chat.billed.connect(self._add_cost)
             self._rev = self.doc.view.rev
         self.box.clear()
-        self._say(question, theme.color("info").name(), bold=True)
+        self._say(question, "me")
         self._answer = ""
         self._mark = self.log.document().characterCount()
         self._enable(False)
         self.chat.ask(question)
 
-    def _say(self, text, color, bold=False):
+    def _say(self, text, kind):
+        """kind: me (question), note (no background), error (soft red)."""
         import html
-        style = f"color:{color};" + ("font-weight:bold;" if bold else "")
-        self.log.append(f"<p style='{style}'>{html.escape(text)}</p>")
+        body = html.escape(text).replace("\n", "<br>")
+        if kind == "error" and not text.startswith("შეცდომა"):
+            body = "<b>შეცდომა.</b> " + body
+        self._show(kind, body)
+
+    def _show(self, kind, body):
+        self._shown.append((kind, body))
+        self.log.append(self._bubble(kind, body))
+
+    def _bubble(self, kind, body):
+        """A message as rich text: Qt draws tables with a background, not rounded boxes."""
+        c = lambda t: theme.color(t).name()  # noqa: E731
+        if kind == "note":
+            return f"<p style='color:{c('ink-muted')}; font-size:12px'>{body}</p>"
+        if kind == "error":
+            body = body.replace("<b>შეცდომა.</b>", f"<b style='color:{c('danger')}'>შეცდომა.</b>")
+            return (f"<table width='100%' cellpadding='8' cellspacing='0' bgcolor='{c('danger-soft')}'>"
+                    f"<tr><td style='color:{c('ink')}'>{body}</td></tr></table>")
+        if kind == "me":
+            return (f"<table width='88%' align='right' cellpadding='8' cellspacing='0' "
+                    f"bgcolor='{c('brand-soft')}'><tr><td style='color:{c('ink')}'>{body}</td></tr></table>")
+        body = body.replace("<a ", f"<a style='color:{c('brand-text')}; font-weight:600; "
+                                   "text-decoration:none' ")
+        return (f"<table width='88%' align='left' cellpadding='8' cellspacing='0' border='1' "
+                f"style='border-color:{c('line')}; border-style:solid' bgcolor='{c('surface-raised')}'>"
+                f"<tr><td style='color:{c('ink')}'>{body}</td></tr></table>")
+
+    def recolor(self):
+        from PySide6.QtGui import QIcon
+        # the red ("checked") picture of the AI icon
+        self.mark.setPixmap(theme.icon("ai").pixmap(18, 18, QIcon.Mode.Normal, QIcon.State.On))
+        from .window import glyph
+        self.gear.setIcon(glyph(0xE713, theme.color("ink")))
+        if self._idle and self._shown:
+            self.log.clear()
+            for kind, body in self._shown:
+                self.log.append(self._bubble(kind, body))
 
     def _delta(self, text):
         if self.sender() is not None and self.sender() is not self.chat:
@@ -421,7 +494,7 @@ class AiPanel(QWidget):
             for p in pages:
                 if p < len(self.doc.sizes):
                     out.append(f" <a href='page:{p}'>[გვ. {p + 1}]</a>")
-        self.log.append("<p>" + "".join(out) + "</p>")
+        self._show("ai", "".join(out))
         self._add_cost(usage, model)
         self._enable(True)
 
@@ -431,7 +504,7 @@ class AiPanel(QWidget):
         if self._answer:
             self._forget_stream()
         self._add_cost(usage, model)
-        self._say(text, theme.color("danger").name())
+        self._say(text, "note" if text == "შეჩერებულია." else "error")
         self._enable(True)
 
     def _link(self, url):
