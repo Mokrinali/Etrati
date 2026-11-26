@@ -850,7 +850,7 @@ class MainWindow(QMainWindow):
                 ("კოპირება", "ნებადართულია" if doc.info["can_copy"] else "აკრძალულია")]
         dlg = QDialog(self)
         dlg.setWindowTitle("ფაილის თვისებები")
-        form = QFormLayout(dlg)
+        form = theme.form_layout(dlg)
         for k, v in rows:
             if v:
                 lab = QLabel(str(v))

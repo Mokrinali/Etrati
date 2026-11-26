@@ -160,6 +160,18 @@ def icon(name: str) -> "QIcon":
     return out
 
 
+def form_layout(parent=None):
+    """A form whose labels stand above the fields: Georgian labels are long
+    (design/components/FormControls)."""
+    from PySide6.QtWidgets import QFormLayout
+    form = QFormLayout(parent) if parent is not None else QFormLayout()
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    form.setVerticalSpacing(6)
+    return form
+
+
 def variant(button, kind: str):
     """primary, ghost or danger: how a push button looks (design/components/Button)."""
     button.setProperty("variant", kind)

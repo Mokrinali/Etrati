@@ -76,7 +76,9 @@ class CornerView(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
+        p.fillRect(self.rect(), theme.color("canvas"))
         if self.image is None:
+            p.setPen(theme.color("ink-muted"))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "დაამატეთ ფოტო, სკანი ან PDF")
             return
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -138,16 +140,21 @@ class ResultView(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
+        p.fillRect(self.rect(), theme.color("canvas"))
         if self.image is None:
+            p.setPen(theme.color("ink-muted"))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.note)
             return
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         w, h = self.image.width(), self.image.height()
         k = min((self.width() - 24) / w, (self.height() - 24) / h)
         box = QRectF((self.width() - w * k) / 2, (self.height() - h * k) / 2, w * k, h * k)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        for grow, alpha in ((4, 10), (2, 18), (1, 30)):  # shadow-page, roughly
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawRoundedRect(box.adjusted(-grow, -grow + 2, grow, grow + 2), 3, 3)
         p.drawImage(box, self.image)
-        p.setPen(QPen(QColor(0, 0, 0, 90), 1))
-        p.drawRect(box)
 
 
 class ScanDialog(QDialog):
@@ -193,8 +200,8 @@ class ScanDialog(QDialog):
         tools = QHBoxLayout()
         self.auto = self._button("კუთხეები ავტომატურად", self.find_again)
         self.full = self._button("მთელი კადრი", lambda: self._set(corners=None))
-        self.left = self._button("⟲", lambda: self._turn(-1))
-        self.right = self._button("⟳", lambda: self._turn(1))
+        self.left = self._button("მარცხნივ მობრუნება", lambda: self._turn(-1))
+        self.right = self._button("მარჯვნივ მობრუნება", lambda: self._turn(1))
         self.deskew = QCheckBox("სტრიქონების გასწორება")
         self.deskew.setChecked(True)
         self.deskew.toggled.connect(lambda on: self._set(deskew=on))
@@ -212,10 +219,11 @@ class ScanDialog(QDialog):
             opts.addWidget(w)
         opts.addStretch()
         self.go = theme.variant(self._button("PDF-ის შექმნა…", self.create), "primary")
-        opts.addWidget(self.go)
         opts.addWidget(self._button("დახურვა", self.reject))
+        opts.addWidget(self.go)  # the main action last
         lay.addLayout(opts)
         self.note = QLabel("საწყისი ფაილები არ იცვლება. ყველაფერი ამ კომპიუტერზე სრულდება.")
+        self.note.setProperty("role", "muted")
         self.note.setWordWrap(True)
         lay.addWidget(self.note)
         self._timer = QTimer(self)
@@ -228,11 +236,15 @@ class ScanDialog(QDialog):
 
     def _button(self, text, slot):
         b = QPushButton(text)
-        if text in ("ზემოთ", "ქვემოთ"):
+        icons = {"ზემოთ": "arrow-up", "ქვემოთ": "arrow-down",
+                 "მარცხნივ მობრუნება": "rotate-page-left", "მარჯვნივ მობრუნება": "rotate-page-right"}
+        if text in icons:
             b.setText("")
-            b.setIcon(theme.icon("arrow-up" if text == "ზემოთ" else "arrow-down"))
+            b.setIcon(theme.icon(icons[text]))
             b.setToolTip(text)
             b.setAccessibleName(text)
+        if text in ("დახურვა", "ამოღება", "ზემოთ", "ქვემოთ"):
+            theme.variant(b, "ghost")
         b.setAutoDefault(False)
         b.clicked.connect(lambda *_: slot())
         return b

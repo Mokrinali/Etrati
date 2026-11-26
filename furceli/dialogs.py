@@ -106,6 +106,8 @@ class MergeDialog(QDialog):
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["ფაილი", "სულ", "გვერდები (ცარიელი = ყველა)"])
         self.table.verticalHeader().hide()
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         head = self.table.horizontalHeader()
@@ -116,6 +118,8 @@ class MergeDialog(QDialog):
         for text, slot in (("დამატება…", self.add), ("ამოღება", self.remove),
                            ("ზემოთ", lambda: self.shift(-1)), ("ქვემოთ", lambda: self.shift(1))):
             b = QPushButton(text)
+            if text in ("ამოღება", "ზემოთ", "ქვემოთ"):
+                theme.variant(b, "ghost")
             if text in ("ზემოთ", "ქვემოთ"):
                 b.setText("")
                 b.setIcon(theme.icon("arrow-up" if text == "ზემოთ" else "arrow-down"))
@@ -322,7 +326,7 @@ class CropDialog(QDialog):
         self.setWindowTitle("გვერდის ჩამოჭრა")
         w, h = size
         lay = QVBoxLayout(self)
-        form = QFormLayout()
+        form = theme.form_layout()
         self.boxes = []
         for text, value, limit in (("მარცხნიდან", margins[0], w), ("ზემოდან", margins[1], h),
                                    ("მარჯვნიდან", margins[2], w), ("ქვემოდან", margins[3], h)):
@@ -368,7 +372,7 @@ class InsertDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("გვერდების ჩასმა ფაილიდან")
         self.n = pages
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         form.addRow(QLabel(f"{name} — {pages} გვერდი"))
         self.ranges = QLineEdit()
         self.ranges.setPlaceholderText("ცარიელი = ყველა. მაგ.: 1-3, 7")

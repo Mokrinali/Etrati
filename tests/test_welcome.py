@@ -144,3 +144,22 @@ def test_ai_messages_as_bubbles(win, tmp_path):  # noqa: F811
 def theme_color_in(html, token):
     from furceli import theme
     return theme.color(token).name() in html
+
+
+def test_dialog_looks(win, tmp_path):  # noqa: F811
+    """Labels above fields, the main action last, segmented signature tabs."""
+    from PySide6.QtWidgets import QDialogButtonBox, QFormLayout
+    from furceli import forms
+    d = forms.WatermarkDialog(3, win)
+    if True:
+        form = d.findChild(QFormLayout)
+        assert form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
+        bb = d.findChild(QDialogButtonBox)
+        ok = bb.button(QDialogButtonBox.StandardButton.Ok)
+        cancel = bb.button(QDialogButtonBox.StandardButton.Cancel)
+        d.show()
+        assert ok.property("variant") == "primary" and ok.x() > cancel.x()
+        d.reject()
+    pad = forms.SignaturePad(win)
+    assert pad.tabs.objectName() == "segments"
+    pad.reject()

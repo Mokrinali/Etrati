@@ -226,7 +226,7 @@ class AiSettings(QDialog):
         super().__init__(parent)
         self.setWindowTitle("AI ასისტენტი")
         self.settings = settings
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._key = QLineEdit(load_key(settings))
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Anthropic API გასაღები:", self._key)

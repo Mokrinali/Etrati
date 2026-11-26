@@ -89,7 +89,7 @@ class TextDialog(QDialog):
         lay = QVBoxLayout(self)
         self._text = QPlainTextEdit()
         lay.addWidget(self._text)
-        form = QFormLayout()
+        form = theme.form_layout()
         self._size = QDoubleSpinBox()
         self._size.setRange(4, 200)
         self._size.setValue(12)
@@ -129,7 +129,7 @@ class LineDialog(QDialog):
         lay = QVBoxLayout(self)
         self._text = QLineEdit(line["text"])
         lay.addWidget(self._text)
-        form = QFormLayout()
+        form = theme.form_layout()
         self._size = QDoubleSpinBox()
         self._size.setRange(.5, 2000)
         self._size.setValue(round(line["size"], 2))
@@ -171,7 +171,7 @@ class FieldDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ფორმის ველი")
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._name = QLineEdit()
         self._kind = QComboBox()
         self._kind.addItems([t for _, t in self.KINDS])
@@ -207,7 +207,7 @@ class WatermarkDialog(PagesMixin, QDialog):
     def __init__(self, n, parent=None):
         super().__init__(parent)
         self.setWindowTitle("წყლის ნიშანი")
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._text = QLineEdit("ნიმუში")
         self._size = QSpinBox()
         self._size.setRange(8, 300)
@@ -251,7 +251,7 @@ class HeaderDialog(PagesMixin, QDialog):
     def __init__(self, n, bates=False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Bates ნუმერაცია" if bates else "კოლონტიტული და ნუმერაცია")
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._texts = {}
         for key, name in self.PLACES:
             self._texts[key] = QLineEdit()
@@ -330,7 +330,7 @@ class ProtectDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("პაროლი და შეზღუდვები")
         self._protected = protected
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._mode = QComboBox()
         self._mode.addItems(["პაროლის დაყენება"] + (["დაცვის მოხსნა"] if protected else []))
         form.addRow("", self._mode)
@@ -390,7 +390,7 @@ class CompressDialog(QDialog):
     def __init__(self, size, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ფაილის შემცირება")
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         form.addRow(QLabel(f"ახლანდელი ზომა: {size / 1048576:.2f} მბ"))
         self._level = QComboBox()
         self._level.addItems([x[0] for x in self.LEVELS])
@@ -413,7 +413,7 @@ class OcrDialog(PagesMixin, QDialog):
     def __init__(self, n, current, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ტექსტის ამოცნობა (OCR)")
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         self._lang = QComboBox()
         self._lang.addItems([x[0] for x in self.LANGS])
         form.addRow("ენა:", self._lang)
@@ -445,7 +445,10 @@ class _Canvas(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), Qt.GlobalColor.white)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(theme.color("paper"))
+        p.setPen(QPen(theme.color("line-strong"), 1, Qt.PenStyle.DashLine))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 8, 8)
         self.draw(p, 1)
 
     def draw(self, p, k):
@@ -490,11 +493,13 @@ class SignaturePad(QDialog):
         self._folder = folder
         lay = QVBoxLayout(self)
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("segments")  # an inline segmented control
+        self.tabs.tabBar().setDrawBase(False)
         self.canvas = _Canvas()
         draw = QWidget()
         v = QVBoxLayout(draw)
         v.addWidget(self.canvas)
-        clear = QPushButton("გასუფთავება")
+        clear = theme.variant(QPushButton("გასუფთავება"), "ghost")
         clear.clicked.connect(lambda: (self.canvas.strokes.clear(), self.canvas.update()))
         v.addWidget(clear)
         self.tabs.addTab(draw, "დახატვა")
@@ -515,8 +520,12 @@ class SignaturePad(QDialog):
         v.addStretch()
         self.tabs.addTab(pick, "სურათი")
         lay.addWidget(self.tabs)
-        note = QLabel("ეს მხოლოდ სურათია. იურიდიული ძალის ციფრული ხელმოწერისთვის გამოიყენეთ სერტიფიკატი.")
-        note.setWordWrap(True)
+        from .banner import Banner
+        note = Banner()
+        note.setObjectName("banner-inline")
+        note.show_message("info", "ეს მხოლოდ სურათია. იურიდიული ძალის ციფრული ხელმოწერისთვის "
+                                  "გამოიყენეთ სერტიფიკატი.")
+        note.close_btn.hide()  # always there
         lay.addWidget(note)
         lay.addWidget(_buttons(self, "ჩასმა", self._check))
 
@@ -572,7 +581,7 @@ class SignDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("ციფრული ხელმოწერა")
         self.client = client
-        form = QFormLayout(self)
+        form = theme.form_layout(self)
         row = QHBoxLayout()
         self._pfx = QLineEdit()
         pick = QPushButton("…")
