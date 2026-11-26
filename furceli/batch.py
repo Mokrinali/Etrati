@@ -14,6 +14,7 @@ from .client import EngineClient, TaskError, run_task
 from .convert_names import IMAGES
 from .dialogs import PDF_FILTER, error_text
 from .forms import CompressDialog, OcrDialog
+from .helper import convert_first
 from .scan_dialog import MODES
 
 
@@ -183,7 +184,8 @@ class BatchDialog(QDialog):
                 source = self._cleaned(client, path, work)
             elif not path.lower().endswith(".pdf"):
                 source = os.path.join(work, "in.pdf")
-                run_task(client, "make_pdf", ([path], source), "", None, allow=self._bar)
+                ready = convert_first(client, [path], False, "", None, allow=self._bar)
+                run_task(client, "make_pdf", (ready, source), "", None, allow=self._bar)
             self._finish(client, path, source, folder, kind)
         finally:
             client.shutdown()  # lets go of the working files

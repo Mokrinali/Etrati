@@ -193,7 +193,8 @@ def new_session() -> str:
 
 @contextlib.contextmanager
 def work_dir():
-    path = new_session()
+    # Inside the engine's folder when there is one: the helper only takes files from there.
+    path = tempfile.mkdtemp(dir=_root) if _root and os.path.isdir(_root) else new_session()
     try:
         yield path
     finally:

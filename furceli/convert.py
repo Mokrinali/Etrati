@@ -5,6 +5,7 @@ import html
 import io
 import os
 import re
+import shutil
 import subprocess
 import time
 import unicodedata
@@ -169,14 +170,19 @@ def without_links(src, folder):
             elif name.endswith(".xml") and name.startswith("xl/"):
                 data = _no_fetch(data)
             zout.writestr(item.filename, data)
-    try:  # keep the mark of a downloaded file: Office is stricter with those
+    _keep_mark(src, out)
+    return out
+
+
+def _keep_mark(src, out):
+    """Keep the mark of a downloaded file: Office is stricter with those."""
+    try:
         with open(src + ":Zone.Identifier", "rb") as f:
             mark = f.read()
         with open(out + ":Zone.Identifier", "wb") as f:
             f.write(mark)
     except OSError:
         pass
-    return out
 
 
 def _safe_source(src, folder, trusted=False):
@@ -237,8 +243,21 @@ def _lock_fields(doc):
             story = story.NextStoryRange
 
 
+def _helper_only():
+    """Office and Edge never run inside the engine: a PDF that took it over must not reach them.
+    The window has them run by the helper (furceli/helper.py)."""
+    if IN_ENGINE:
+        raise EngineError("needs_helper")
+
+
 def _word(src, out, trusted=False):
-    with files.work_dir() as tmp, _Com("Word.Application") as com:
+    with files.work_dir() as tmp:
+        _word_com(_safe_source(src, tmp, trusted), out)
+
+
+def _word_com(path, out):
+    _helper_only()
+    with _Com("Word.Application") as com:
         app = com.app
         app.Visible = False
         app.DisplayAlerts = 0
@@ -247,7 +266,7 @@ def _word(src, out, trusted=False):
         blank = app.Documents.Add()
         com.own(app.ActiveWindow.Hwnd)
         blank.Close(False)
-        doc = app.Documents.Open(_safe_source(src, tmp, trusted), ConfirmConversions=False,
+        doc = app.Documents.Open(path, ConfirmConversions=False,
                                  ReadOnly=True, AddToRecentFiles=False,
                                  PasswordDocument=NO_PASSWORD)
         try:
@@ -258,7 +277,13 @@ def _word(src, out, trusted=False):
 
 
 def _excel(src, out, trusted=False):
-    with files.work_dir() as tmp, _Com("Excel.Application") as com:
+    with files.work_dir() as tmp:
+        _excel_com(_safe_source(src, tmp, trusted), out)
+
+
+def _excel_com(path, out):
+    _helper_only()
+    with _Com("Excel.Application") as com:
         app = com.app
         com.own(app.Hwnd)
         app.Visible = False
@@ -266,7 +291,7 @@ def _excel(src, out, trusted=False):
         app.AutomationSecurity = 3
         app.AskToUpdateLinks = False
         app.EnableEvents = False
-        book = app.Workbooks.Open(_safe_source(src, tmp, trusted), UpdateLinks=0, ReadOnly=True,
+        book = app.Workbooks.Open(path, UpdateLinks=0, ReadOnly=True,
                                   Password=NO_PASSWORD, AddToMru=False)
         try:
             book.ExportAsFixedFormat(0, out)
@@ -275,6 +300,12 @@ def _excel(src, out, trusted=False):
 
 
 def _slides(src, out, trusted=False):
+    with files.work_dir() as tmp:
+        _slides_com(_safe_source(src, tmp, trusted), out)
+
+
+def _slides_com(path, out):
+    _helper_only()
     import pythoncom
     import win32com.client
     pythoncom.CoInitialize()
@@ -288,12 +319,12 @@ def _slides(src, out, trusted=False):
         com.quit = lambda: None
     # Never announced as a helper: the user may open a presentation in it meanwhile,
     # and a forced end would take that with it.
-    with files.work_dir() as tmp, com:
+    with com:
         app = com.app
         old = app.AutomationSecurity
         try:
             app.AutomationSecurity = 3
-            show = app.Presentations.Open(_safe_source(src, tmp, trusted), ReadOnly=True,
+            show = app.Presentations.Open(path, ReadOnly=True,
                                           Untitled=False, WithWindow=False)
             try:
                 show.SaveAs(out, 32)
@@ -451,18 +482,30 @@ def harmless_html(data: bytes, folder: str) -> bytes:
             f'content="{CSP}">' + body).encode("utf-8")
 
 
+def _clean_page(src, folder):
+    """The HTML page made harmless, as page.html in folder."""
+    with open(src, "rb") as f:
+        data = f.read()
+    page = os.path.join(folder, "page.html")
+    with open(page, "wb") as f:
+        f.write(harmless_html(data, os.path.dirname(src)))
+    return page
+
+
 def _web(src, out):
+    with files.work_dir() as tmp:
+        _edge_print(_clean_page(src, tmp), out)
+
+
+def _edge_print(page, out):
+    """Edge prints a page made harmless before (_clean_page) to PDF."""
+    _helper_only()
     edge = _edge_path()
     if not edge or not os.path.exists(edge):
         raise EngineError("no_edge")
     import psutil
     from urllib.request import pathname2url
     with files.work_dir() as tmp:
-        with open(src, "rb") as f:
-            data = f.read()
-        page = os.path.join(tmp, "page.html")
-        with open(page, "wb") as f:
-            f.write(harmless_html(data, os.path.dirname(src)))
         try:
             proc = subprocess.Popen(
                 [edge, "--headless=new", "--disable-gpu", "--no-first-run", "--disable-extensions",
@@ -580,6 +623,52 @@ def _one(src, out, trusted=False):
         raise EngineError("convert_failed")
 
 
+IN_ENGINE = False  # set by the engine process: Office and Edge are the helper's
+NEEDS_HELPER = WORD | EXCEL | SLIDES | WEB
+OFFICE_KIND = {**dict.fromkeys(WORD, "word"), **dict.fromkeys(EXCEL, "excel"),
+               **dict.fromkeys(SLIDES, "slides"), **dict.fromkeys(WEB, "web")}
+
+
+def prepare(src, trusted=False):
+    """For the helper: an Office or HTML file made harmless, in a folder of the engine's own.
+    Returns (kind, path). Runs in the engine, which may read the stranger's bytes."""
+    ext = os.path.splitext(src)[1].lower()
+    kind = OFFICE_KIND.get(ext)
+    if kind is None:
+        raise EngineError("bad_type")
+    folder = files.outbox_dir()
+    if kind == "web":
+        return kind, _clean_page(os.path.abspath(src), folder)
+    path = _safe_source(src, folder, trusted)
+    if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(src)):
+        path = os.path.join(folder, "source" + ext)  # an old format the user trusts: as it is
+        try:
+            shutil.copyfile(src, path)
+        except FileNotFoundError:
+            raise EngineError("not_found")
+        except OSError:
+            raise EngineError("no_access")
+        _keep_mark(src, path)
+    return kind, path
+
+
+def helper_convert(kind, path, out):
+    """In the helper: Office or Edge turns a prepared file into a PDF."""
+    try:
+        if kind == "web":
+            _edge_print(path, out)
+        else:
+            {"word": _word_com, "excel": _excel_com, "slides": _slides_com}[kind](path, out)
+    except EngineError:
+        raise
+    except KeyError:
+        raise EngineError("bad_op")
+    except Exception:
+        raise EngineError("convert_failed")
+    if not (os.path.exists(out) and os.path.getsize(out)):
+        raise EngineError("convert_failed")
+
+
 def make_pdf(paths, out, trusted=False):
     """Convert files to one PDF. Error codes end with the number of the bad file."""
     merged = pymupdf.open()
@@ -592,6 +681,8 @@ def make_pdf(paths, out, trusted=False):
                     if part.needs_pass:
                         raise EngineError("needs_password")
                 else:
+                    if IN_ENGINE and os.path.splitext(src)[1].lower() in NEEDS_HELPER:
+                        raise EngineError("needs_helper")  # the window converts these first
                     piece = os.path.join(tmp, f"{i}.pdf")
                     _one(src, piece, trusted)
                     part = pymupdf.open(piece)

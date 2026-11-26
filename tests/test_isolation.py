@@ -124,3 +124,72 @@ def test_pictures_are_all_or_nothing(tmp_path, monkeypatch):
         files.deliver_all(list(zip(work, map(str, made))))
     assert not made[0].exists() and not made[1].exists()
     assert made[2].read_bytes() == b"somebody's"
+
+
+# -- step B: Office and Edge run in the helper, never in the engine --------------------------
+def office_and_web(tmp_path):
+    import docx
+    d = docx.Document()
+    d.add_paragraph("HELLOWORD ქართული")
+    d.save(str(tmp_path / "a.docx"))
+    (tmp_path / "b.html").write_text("<p>HELLOHTML</p>", encoding="utf-8")
+    return str(tmp_path / "a.docx"), str(tmp_path / "b.html")
+
+
+def test_engine_does_not_start_office_or_edge(app, tmp_path):  # noqa: F811
+    word, page = office_and_web(tmp_path)
+    c = client.EngineClient()
+    try:
+        for i, path in enumerate((word, page)):
+            with pytest.raises(client.TaskError, match="needs_helper#0"):
+                client.run_task(c, "make_pdf", ([path], files.outbox(path + ".pdf")), "", None)
+    finally:
+        c.shutdown()
+
+
+def test_helper_converts_only_inside_the_engine_folder(app, tmp_path):  # noqa: F811
+    from furceli import helper
+    word, _ = office_and_web(tmp_path)
+    h = client.EngineClient(serve=helper.serve)
+    try:
+        for op, args in (("open", (word, "")), ("render", (0, 1, 0)), ("make_pdf", ([word], "x"))):
+            with pytest.raises(client.TaskError, match="bad_op"):
+                client.run_task(h, op, args, "", None)
+        with pytest.raises(client.TaskError, match="outside"):
+            client.run_task(h, "convert", ("word", word, files.outbox("a.pdf")), "", None)
+    finally:
+        h.shutdown()
+
+
+def test_window_converts_office_and_html_through_the_helper(app, tmp_path):  # noqa: F811
+    from furceli import helper
+    word, page = office_and_web(tmp_path)
+    pic = tmp_path / "c.png"
+    pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), 0).save(str(pic))
+    c = client.EngineClient()
+    try:
+        try:
+            ready = helper.convert_first(c, [word, page, str(pic)], False, "", None)
+        except client.TaskError as e:
+            if "no_office" in str(e) or "no_edge" in str(e):
+                pytest.skip(str(e))
+            raise
+        assert ready[2] == str(pic) and all(inside(p, files.engine_root()) for p in ready[:2])
+        out = files.outbox(str(tmp_path / "all.pdf"))
+        assert client.run_task(c, "make_pdf", (ready, out), "", None)["pages"] == 3
+    finally:
+        c.shutdown()
+    text = "".join(p.get_text() for p in pymupdf.open(out))
+    assert "HELLOWORD" in text and "HELLOHTML" in text
+
+
+def test_helper_errors_keep_the_number_of_the_file(app, tmp_path):  # noqa: F811
+    from furceli import helper
+    bad = tmp_path / "bad.docx"
+    bad.write_bytes(b"not a zip")
+    c = client.EngineClient()
+    try:
+        with pytest.raises(client.TaskError, match="untrusted#1"):
+            helper.convert_first(c, [str(tmp_path / "x.png"), str(bad)], False, "", None)
+    finally:
+        c.shutdown()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 
-from . import convert, scan, signing
+from . import convert, files, scan, signing
 from .engine import EngineError
 from .features import Features
 
@@ -12,7 +12,8 @@ QUERIES = {"render", "chars", "search", "links", "annots", "all_annots", "widget
            "ocr_words", "compare", "mentions", "page_texts", "pdf_box"}
 CHANGES = {"open", "replay", "apply", "save", "export", "pdfa"}
 SCAN = {"scan_count", "scan_analyse", "scan_preview", "scan_build", "scan_join"}
-NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign", "verify", "make_certificate"}
+NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign", "verify", "make_certificate",
+                 "prepare"}
 ALLOWED = QUERIES | CHANGES | NO_DOC | {"export_as", "to_images"}
 
 
@@ -51,6 +52,8 @@ def run(engine, op, args, root=None):
                 "scan_join": scan.join}[op](*args)
     if op == "make_pdf":
         return convert.make_pdf(*args)
+    if op == "prepare":
+        return convert.prepare(*args)
     if op == "export_as":
         return convert.export_as(engine, *args)
     if op == "to_images":
@@ -61,6 +64,9 @@ def run(engine, op, args, root=None):
 
 
 def serve(conn, root=None):
+    if root is not None:
+        files._root = root          # its working folders go there too
+        convert.IN_ENGINE = True    # Office and Edge are the helper's
     engine = Features()
     convert.notify = conn.send
     testing = bool(os.environ.get("FURCELI_TEST"))

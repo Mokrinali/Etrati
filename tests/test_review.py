@@ -308,9 +308,16 @@ def test_f7_word_export_leaves_no_decrypted_copy(tmp_path, monkeypatch):
     locked = str(tmp_path / "l.pdf")
     pymupdf.open(build(tmp_path / "a.pdf")).save(
         locked, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="u", owner_pw="o")
+    import contextlib
     seen = []
-    real = files.new_session
-    monkeypatch.setattr(files, "new_session", lambda: seen.append(real()) or seen[-1])
+    real = files.work_dir  # inside the engine's folder when there is one, else a new session
+
+    @contextlib.contextmanager
+    def spy():
+        with real() as path:
+            seen.append(path)
+            yield path
+    monkeypatch.setattr(files, "work_dir", spy)
     convert.export_as(engine(locked, "u"), "docx", str(tmp_path / "o.docx"), [0])
     assert seen and not any(os.path.exists(p) for p in seen)
 

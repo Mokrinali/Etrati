@@ -70,8 +70,9 @@ def main():
     from PySide6.QtWidgets import QApplication
     app = QApplication([])
     import pymupdf
-    from furceli import theme
+    from furceli import files, theme
     from furceli.client import EngineClient, TaskError, run_task
+    from furceli.helper import convert_first
     log("frozen", getattr(sys, "frozen", False), sys.executable)
     pdf, docx, xlsx, photo = pick(folder, work, log)
 
@@ -111,7 +112,15 @@ def main():
         return wrong == "wrong_password" and len(info["sizes"]) > 0, f"wrong={wrong} pages={len(info['sizes'])}"
     check("password PDF", password)
 
-    saved = os.path.join(work, "saved.pdf")
+    saved = files.outbox(os.path.join(work, "saved.pdf"))  # the engine writes only there
+
+    def walled():
+        try:
+            run_task(client, "save", (os.path.join(work, "outside.pdf"),))
+        except TaskError as e:
+            return str(e) == "outside" and not os.path.exists(os.path.join(work, "outside.pdf")), str(e)
+        return False, "the engine wrote outside its folder"
+    check("engine writes only into its folder", walled)
 
     def save():
         run_task(client, "apply", (("rotate", [0], 90),))
@@ -152,9 +161,9 @@ def main():
         try:
             n = run_task(c, "scan_count", (h, ""))["pages"]
             o = run_task(c, "scan_analyse", (h, 0, "", "kat+eng"))
-            part = os.path.join(work, "part.pdf")
+            part = files.outbox(os.path.join(work, "part.pdf"))
             words = run_task(c, "scan_build", (h, 0, dict(o, mode="gray", languages="kat+eng"), part))
-            clean = os.path.join(work, "clean.pdf")
+            clean = files.outbox(os.path.join(work, "clean.pdf"))
             run_task(c, "scan_join", ([part], clean))
         finally:
             c.shutdown()
@@ -169,7 +178,8 @@ def main():
                 return False, "no sample"
             c = EngineClient()
             try:
-                r = run_task(c, "make_pdf", ([src], os.path.join(work, os.path.basename(src) + ".pdf")))
+                ready = convert_first(c, [src], False, "", None)  # Office runs in the helper
+                r = run_task(c, "make_pdf", (ready, files.outbox(src + ".pdf")))
             finally:
                 c.shutdown()
             return r["pages"] > 0, f"pages={r['pages']}"
@@ -177,7 +187,7 @@ def main():
 
     def to_word():
         c = EngineClient()
-        target = os.path.join(work, "out.docx")
+        target = files.outbox(os.path.join(work, "out.docx"))
         try:
             run_task(c, "open", (pdf, ""))
             note = run_task(c, "export_as", ("docx", target, [0]))
@@ -213,8 +223,8 @@ def main():
     # -- certificate signature ----------------------------------------------------------------
     def sign():
         c = EngineClient()
-        pfx = os.path.join(work, "test.pfx")
-        signed = os.path.join(work, "signed.pdf")
+        pfx = files.outbox(os.path.join(work, "test.pfx"))
+        signed = files.outbox(os.path.join(work, "signed.pdf"))
         plain = os.path.join(work, "plain.pdf")
         shutil.copyfile(pdf, plain)
         try:

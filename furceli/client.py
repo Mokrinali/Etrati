@@ -11,13 +11,13 @@ from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QProgressDialog, QWidget
 
 from . import files
-from .worker import serve
+from .worker import serve as worker_serve
 
 # Lower runs first.
 P_OPEN, P_PRINT, P_VISIBLE, P_TEXT, P_THUMB, P_SEARCH = 0, 5, 10, 20, 30, 40
 TIMEOUT = 60.0
 LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
-        "apply": 300.0, "open": 120.0, "make_pdf": 900.0, "export_as": 1800.0,
+        "apply": 300.0, "open": 120.0, "make_pdf": 900.0, "convert": 900.0, "export_as": 1800.0,
         "to_images": 900.0, "compare": 600.0, "ocr_words": 300.0, "sign": 120.0, "pdfa": 900.0,
         "all_annots": 300.0, "scan_build": 300.0, "scan_analyse": 180.0, "scan_join": 600.0,
         "scan_count": 300.0, "scan_preview": 180.0, "page_texts": 300.0, "mentions": 300.0}
@@ -46,8 +46,10 @@ class EngineClient(QObject):
     failed = Signal(object, str)     # key, error code
     crashed = Signal()               # the engine died and will be restarted
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, serve=None):
+        """serve: what the process runs; the engine by default, the helper for Office."""
         super().__init__(parent)
+        self._serve = serve or worker_serve
         self._ctx = mp.get_context("spawn")
         self._root = files.engine_root()  # the only folder the engine may write to
         self._cv = threading.Condition()
@@ -140,7 +142,7 @@ class EngineClient(QObject):
     # -- worker thread -----------------------------------------------------
     def _start(self):
         parent, child = self._ctx.Pipe()
-        proc = self._ctx.Process(target=serve, args=(child, self._root), daemon=True)
+        proc = self._ctx.Process(target=self._serve, args=(child, self._root), daemon=True)
         proc.start()
         child.close()
         self._conn = parent

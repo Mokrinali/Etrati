@@ -19,6 +19,7 @@ from .batch import BatchDialog
 from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
+from .helper import convert_first
 from .scan_dialog import ScanDialog
 from .banner import Banner
 from .swatches import ColorSwatches
@@ -381,7 +382,9 @@ class MainWindow(QMainWindow):
         client = EngineClient(self)
         tmp = files.outbox(out)
         try:
-            run_task(client, "make_pdf", (paths, tmp, bool(old)), "PDF იქმნება…", self)
+            # Office and HTML: made harmless by the engine, converted by the helper
+            ready = convert_first(client, paths, bool(old), "PDF იქმნება…", self)
+            run_task(client, "make_pdf", (ready, tmp, bool(old)), "PDF იქმნება…", self)
             files.put_in_place(tmp, out)
         except TaskError as e:
             code, _, n = str(e).partition("#")
