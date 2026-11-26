@@ -636,7 +636,7 @@ def test_redaction_copies_a_big_file_once(tmp_path, monkeypatch):
     assert all("".join(d[p].get_text().split()) == "page" for p in range(6))
 
 
-def test_pages_sharing_a_drawing_are_tried_on_what_they_are_now(tmp_path):
+def test_redacting_a_shared_drawing_and_own_words_on_two_pages(tmp_path):
     """Redacting a drawing two pages share may change the second page as well."""
     from test_features import engine, saved
     d = pymupdf.open()

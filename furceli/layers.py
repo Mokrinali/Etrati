@@ -216,10 +216,25 @@ STROKE = {b"S", b"s", b"B", b"B*", b"b", b"b*"}
 NAME = re.compile(rb"/([^\0\t\n\f\r ()<>\[\]{}/%]*)")
 
 
+DA_FONT = re.compile(rb"/([^\s/\[\]()<>{}%]+)\s+[-+\d.]+\s+Tf")
+
+
 def _all_names(s):
     """Every name a stream could mean, and more: for streams that stay as they were."""
     names = {_name(n) for n in NAME.findall(s)}
     return {"Font": names, "Pattern": names, "Shading": names}
+
+
+def _mentioned(s):
+    """Fonts, patterns and shadings a stream asks for, painted with or not."""
+    out = {"Font": set(), "Pattern": set(), "Shading": set()}
+    for operands, op, _, _ in _operations(s):
+        if op in (b"Tf", b"scn", b"SCN", b"sh"):
+            names = [o for o in operands if o[:1] == b"/"]
+            if names:
+                kind = {b"Tf": "Font", b"sh": "Shading"}.get(op, "Pattern")
+                out[kind].add(_name(names[0 if op == b"Tf" else -1][1:]))
+    return out
 
 
 def _settled(s):
@@ -358,12 +373,17 @@ class _Remover:
             o = mu.pdf_dict_gets(o, "Resources")
         return mu.pdf_dict_gets(o, key[2])
 
-    def note(self, resources, owner, used, changed):
+    def note(self, resources, owner, used, changed, named=None):
         """Remember which names a stream uses, and from which lists."""
         if not resources.m_internal:
             self.borrowed = self.borrowed or any(used.values())
             return
-        for cat, (key, sub) in self.lists(resources, owner).items():
+        lists = self.lists(resources, owner)
+        for cat, names in (named or {}).items():
+            have = {_plain(n) for n, _ in self.entries(lists[cat][1])} if cat in lists else set()
+            if names - have:  # MuPDF looks for a name a stream lacks where the stream is drawn
+                self.borrowed = True
+        for cat, (key, sub) in lists.items():
             self.uses.setdefault(key, set()).update(used[cat])
             if changed:
                 self.prune[key] = True
@@ -379,11 +399,12 @@ class _Remover:
             if self.hidden(mu.pdf_dict_gets(v, "OC")):
                 gone.add(_plain(n))
         new, drawn, dropped = _without(data, marks, gone)
+        named = _mentioned(data)
         if new != data:
             new, used = _settled(new)
-            self.note(resources, owner, used, True)
+            self.note(resources, owner, used, True, named)
         else:
-            self.note(resources, owner, _all_names(data), False)
+            self.note(resources, owner, _all_names(data), False, named)
         if not resources.m_internal and (drawn or dropped):
             raise _Broken  # it borrows names from wherever it is drawn
         self.links[key] = {number[n] for n in drawn if n in number}
@@ -403,7 +424,7 @@ class _Remover:
                 continue
             letters = mu.pdf_to_name(mu.pdf_dict_gets(o, "Subtype")) == "Type3"
             for k, v in self.entries(o):
-                if k == "G" and mu.pdf_is_indirect(v):
+                if k in ("G", "SMask", "Mask") and mu.pdf_is_indirect(v):
                     out.add(mu.pdf_to_num(v))
                 elif k == "AP":
                     for _, w in self.entries(v):
@@ -451,26 +472,46 @@ class _Remover:
                 doc.update_stream(x, new)
                 page.set_contents(x)
             page = None
+        letters = {}  # letter drawing -> the resources of its font
         for x, o in list(self.objects()):
             roots |= self.roots(o)
             if mu.pdf_to_name(mu.pdf_dict_gets(o, "Subtype")) == "Type3":
-                res = mu.pdf_dict_gets(o, "Resources")
                 for _, proc in self.entries(mu.pdf_dict_gets(o, "CharProcs")):
-                    data = self.doc.xref_stream(mu.pdf_to_num(proc)) if mu.pdf_is_indirect(
-                        proc) else None
-                    if data is None:
+                    if not mu.pdf_is_indirect(proc) or not self.doc.xref_is_stream(mu.pdf_to_num(proc)):
                         raise _Broken  # letters that cannot be read cannot be judged
-                    self.note(res, x, _all_names(data), False)
-            if not mu.pdf_is_stream(o):
+                    letters[mu.pdf_to_num(proc)] = x
+        for x, o in list(self.objects()):
+            if not doc.xref_is_stream(x) or mu.pdf_to_name(mu.pdf_dict_gets(o, "Subtype")) == "Image":
                 continue
             pattern = mu.pdf_to_int(mu.pdf_dict_gets(o, "PatternType")) == 1
-            if not pattern and mu.pdf_to_name(mu.pdf_dict_gets(o, "Subtype")) != "Form":
-                continue
-            if pattern:
+            form = mu.pdf_to_name(mu.pdf_dict_gets(o, "Subtype")) == "Form"
+            if x in letters:
+                font = letters[x]
+                res = mu.pdf_dict_gets(mu.pdf_load_object(self.pdf, font), "Resources")
+                new = self.stream(x, doc.xref_stream(x) or b"", res, font)
                 roots.add(x)
-            new = self.stream(x, doc.xref_stream(x) or b"", mu.pdf_dict_gets(o, "Resources"), x)
+            elif pattern or form or x in roots:
+                if pattern:
+                    roots.add(x)
+                new = self.stream(x, doc.xref_stream(x) or b"", mu.pdf_dict_gets(o, "Resources"), x)
+            else:
+                continue
             if new is not None:
                 doc.update_stream(x, new)
+        # 6: fonts form fields name in their text settings come from the form's list
+        form = mu.pdf_dict_gets(mu.pdf_load_object(self.pdf, doc.pdf_catalog()), "AcroForm")
+        dr = mu.pdf_dict_gets(form, "DR")
+        if mu.pdf_is_dict(dr):
+            named = set()
+            for x, o in list(self.objects()):
+                da = mu.pdf_dict_gets(o, "DA") if mu.pdf_is_dict(o) else None
+                if da is not None and mu.pdf_is_string(da):
+                    named |= {_name(n) for n in DA_FONT.findall(mu.pdf_to_text_string(da).encode(
+                        "latin-1", "replace"))}
+            if mu.pdf_is_string(mu.pdf_dict_gets(form, "DA")):
+                named |= {_name(n) for n in DA_FONT.findall(mu.pdf_to_text_string(
+                    mu.pdf_dict_gets(form, "DA")).encode("latin-1", "replace"))}
+            self.note(dr, None, {"Font": named, "Pattern": set(), "Shading": set()}, False)
         seen, todo = set(), list(roots)
         while todo:
             key = todo.pop()
