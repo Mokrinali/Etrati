@@ -116,6 +116,10 @@ class BatchDialog(QDialog):
         if self.lock.isChecked() and not self.password.text():
             QMessageBox.warning(self, self.windowTitle(), "ჩაწერეთ პაროლი.")
             return
+        if self.lock.isChecked() and self.OUTPUTS[self.kind.currentIndex()][1] != "pdf":
+            QMessageBox.warning(self, self.windowTitle(), "პაროლი მხოლოდ PDF შედეგს ედება. აირჩიეთ ტიპი "
+                                "„PDF“ ან მოხსენით პაროლი.")
+            return
         folder = QFileDialog.getExistingDirectory(self, "სად შევინახო შედეგები")
         if folder:
             self.run(folder)
@@ -147,7 +151,9 @@ class BatchDialog(QDialog):
                 self.report.append((path, error_text("no_access")))
             finally:
                 client.shutdown()
+                client.deleteLater()
         bar.close()
+        bar.deleteLater()
 
     def _cleaned(self, client, path, work):
         """The file as a clean searchable PDF in the working folder."""

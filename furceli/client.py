@@ -19,9 +19,24 @@ TIMEOUT = 60.0
 LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
         "apply": 300.0, "open": 120.0, "make_pdf": 900.0, "export_as": 1800.0,
         "to_images": 900.0, "compare": 600.0, "ocr_words": 300.0, "sign": 120.0, "pdfa": 900.0,
-        "all_annots": 300.0, "scan_build": 300.0, "scan_analyse": 180.0, "scan_join": 600.0, "page_texts": 300.0, "mentions": 300.0}
+        "all_annots": 300.0, "scan_build": 300.0, "scan_analyse": 180.0, "scan_join": 600.0,
+        "scan_count": 300.0, "scan_preview": 180.0, "page_texts": 300.0, "mentions": 300.0}
 MAX_RESTARTS = 5             # in a row, without a single success between them
 ALWAYS_TRY = {"save", "export", "replay", "open", "pdfa"}  # the user's work depends on these
+
+
+class FileChanged(Exception):
+    """The engine was restarted and found another file under the document's name."""
+
+
+_finishing: list = []  # threads that end the engines of closed tabs
+
+
+def finish_all(seconds=3.0):
+    """Before the program ends: engines still ending get their time, all at once."""
+    end = time.monotonic() + seconds
+    while _finishing:
+        _finishing.pop().join(max(end - time.monotonic(), 0))
 
 
 class EngineClient(QObject):
@@ -41,6 +56,8 @@ class EngineClient(QObject):
         self._stop = False
         self._proc = self._conn = None
         self._opened = None          # (op, args) that rebuilds the document after a crash
+        self._stamp = None           # the file as it was opened: (time, size)
+        self._lost = False           # it is another file now: nothing may be read from it
         self._restarts = 0
         self._current = None         # key being worked on
         self._aborting = False
@@ -51,7 +68,7 @@ class EngineClient(QObject):
     # -- called from the UI thread ----------------------------------------
     def submit(self, key, priority: int, op: str, *args):
         with self._cv:
-            if key not in self._pending:
+            if key not in self._pending and (key != self._current or self._aborting):
                 seq = next(self._seq)
                 self._pending[key] = (seq, op, args)
                 heapq.heappush(self._heap, (priority, seq, key))
@@ -79,9 +96,17 @@ class EngineClient(QObject):
 
     def recover_with(self, path, password, ops):
         """After a crash, rebuild the edited document rather than the plain file."""
-        self._opened = ("replay", (path, password, list(ops)))
+        with self._cv:
+            self._opened = ("replay", (path, password, list(ops)))
 
-    def shutdown(self):
+    def accept_stamp(self, stamp):
+        """The window itself replaced the file."""
+        with self._cv:
+            self._stamp = tuple(stamp)
+
+    def shutdown(self, wait=True, after=None):
+        """End the engine. wait=False leaves the waiting to a thread of its own: closing a tab
+        must not hold up the window. after() runs once the engine is gone."""
         with self._cv:
             if self._stop:
                 return
@@ -92,13 +117,24 @@ class EngineClient(QObject):
             self._cv.notify()
         for key in waiting:  # somebody is blocked on these
             self.failed.emit(key, "closed")
-        proc = self._proc
-        if proc is not None:
-            proc.join(0.3)
-            if proc.is_alive():
-                proc.kill()
-        self._thread.join(2)
-        self._stop_helpers()
+        t = threading.Thread(target=self._finish, args=(after,), daemon=True)
+        t.start()
+        _finishing.append(t)
+        if wait:
+            t.join(3)
+
+    def _finish(self, after):
+        try:
+            proc = self._proc
+            if proc is not None:
+                proc.join(0.3)
+                if proc.is_alive():
+                    proc.kill()
+            self._thread.join(2)
+            self._stop_helpers()
+        finally:
+            if after is not None:
+                after()
 
     # -- worker thread -----------------------------------------------------
     def _start(self):
@@ -120,7 +156,10 @@ class EngineClient(QObject):
             self._conn.close()
         self._proc = self._conn = None
         self._stop_helpers()
-        files.sweep_sessions()  # what the dead engine left in the temporary folder
+        try:
+            files.sweep_sessions()  # what the dead engine left in the temporary folder
+        except OSError:
+            pass  # tidying up must not stop the work
 
     def _stop_helpers(self):
         """End an invisible Office or Edge that a killed engine left behind."""
@@ -157,10 +196,25 @@ class EngineClient(QObject):
     def _call(self, op, args):
         if self._proc is None:
             self._start()
-            if (self._opened and op not in ("open", "replay")
-                    and self._ask(*self._opened)[0] != "ok"):
-                raise EOFError
+            if self._opened and op not in ("open", "replay"):
+                status, info = self._ask(*self._opened)
+                if status != "ok":
+                    raise EOFError
+                if self._opened[0] == "open" and tuple(info["stamp"]) != self._stamp:
+                    self._lost = True
+                    raise FileChanged
         return self._ask(op, args)
+
+    def _remember(self, op, args, value):
+        """What rebuilds the document is known here first, before the window hears of it."""
+        with self._cv:
+            if op == "open":
+                self._opened, self._stamp, self._lost = (op, args), tuple(value["stamp"]), False
+            elif op == "replay":
+                self._opened, self._lost = (op, (*args[:2], list(args[2]))), False
+            elif op == "apply" and self._opened and self._opened[0] == "replay":
+                path, password, ops = self._opened[1]
+                self._opened = ("replay", (path, password, [*ops, args[0]]))
 
     def _run(self):
         while True:
@@ -174,13 +228,28 @@ class EngineClient(QObject):
                     continue  # cancelled
                 _, op, args = self._pending.pop(key)
                 self._current = key
-            if self._restarts > MAX_RESTARTS and op not in ALWAYS_TRY:
-                self._emit(self.failed, key, "engine_dead")
+                dead = ("file_changed" if self._lost and op not in ("open", "replay") else
+                        "engine_dead" if self._restarts > MAX_RESTARTS and op not in ALWAYS_TRY
+                        else "")
+                if dead:
+                    self._current, self._aborting = None, False
+            if dead:
+                self._emit(self.failed, key, dead)
                 continue
             try:
                 status, value = self._call(op, args)
-            except (EOFError, OSError):
+                if status == "ok":
+                    self._remember(op, args, value)
+            except FileChanged:
                 self._kill()
+                self._current, self._aborting = None, False
+                self._emit(self.failed, key, "file_changed")
+                continue
+            except Exception:  # whatever went wrong, the window must get an answer
+                try:
+                    self._kill()
+                except Exception:
+                    self._proc = self._conn = None
                 if self._stop:
                     break
                 aborted, self._aborting, self._current = self._aborting, False, None
@@ -197,8 +266,6 @@ class EngineClient(QObject):
                 self._kill()
             if status == "ok":
                 self._restarts = 0
-                if op == "open":
-                    self._opened = (op, args)
                 self._emit(self.done, key, value)
             else:
                 self._emit(self.failed, key, value)
@@ -295,7 +362,7 @@ def _blocking(start, text, parent, allow=None, cancel=None):
 def run_task(client, op, args, text="", parent=None, allow=None):
     """Run an engine operation, keeping the window responsive but blocked.
 
-    allow: a dialog of the caller (its own cancel button) that stays usable.
+    allow: a dialog of the caller that stays usable; its cancel button stops the task.
     """
     key = ("task", next(_task_ids))
     box = {}
@@ -321,9 +388,17 @@ def run_task(client, op, args, text="", parent=None, allow=None):
             QTimer.singleShot(0, loop.quit)
         else:
             client.submit(key, P_OPEN, op, *args)
+    stop = getattr(allow, "canceled", None)  # a progress dialog of the caller
+
+    def abort():
+        client.abort(key)
+    if stop is not None:
+        stop.connect(abort)
     try:
-        _blocking(start, text, parent, allow, (lambda: client.abort(key)) if text else None)
+        _blocking(start, text, parent, allow, abort if text else None)
     finally:
+        if stop is not None:
+            stop.disconnect(abort)
         try:
             client.done.disconnect(done)
             client.failed.disconnect(failed)

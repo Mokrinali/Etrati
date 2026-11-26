@@ -241,7 +241,8 @@ class Engine:
         lines = self.chars(pno)
         out, seen = [], set()
         for joined in (False, True):  # second pass: words divided by a hyphen at a line end
-            if joined and not any(ln[-1][4] == "-" for ln in lines if ln):
+            if joined and not any("".join(c[4] for c in ln).rstrip().endswith("-")
+                                  for ln in lines):
                 break
             hay, refs = [], []
             for n, ln in enumerate(lines):
@@ -317,8 +318,10 @@ def _open_source(path: str, password: str):
     except Exception:
         raise EngineError("damaged")
     if src.needs_pass and not src.authenticate(password):
+        src.close()
         raise EngineError("wrong_password" if password else "needs_password")
     if not src.permissions & (pymupdf.PDF_PERM_ASSEMBLE | pymupdf.PDF_PERM_COPY):
+        src.close()
         raise EngineError("not_allowed")
     return src
 
@@ -416,14 +419,18 @@ def _set_toc(doc, toc: list):
                          f"[{page.xref} 0 R/XYZ {pdf.x:g} {pdf.y:g} {dest.get('zoom') or 0:g}]")
 
 
-def _write(doc, path: str, password: str = "", protected: bool = False, **kw):
-    """Save, then prove the result opens and has every page before anyone uses it."""
+def _write(doc, path: str, password: str = "", protected: bool = False, like=None, **kw):
+    """Save, then prove the result opens and has every page before anyone uses it.
+
+    like: the document the result must agree with, when doc itself is only a copy of it.
+    """
     try:
         doc.save(path, garbage=3, deflate=True, **kw)
     except Exception as e:
         raise EngineError("no_access" if isinstance(e, PermissionError) or
                           "Permission" in str(e) or "cannot open" in str(e) else "save_failed")
     check = pymupdf.open(path, filetype="pdf")
+    doc = like or doc
     try:
         # The password comes first: metadata is unreadable before it.
         if check.needs_pass and not check.authenticate(password):
@@ -436,9 +443,15 @@ def _write(doc, path: str, password: str = "", protected: bool = False, **kw):
             a, b = check[i].rect, doc[i].rect
             if abs(a.width - b.width) > 1 or abs(a.height - b.height) > 1:
                 raise EngineError("save_failed")
-        step = max(doc.page_count // 25, 1)
-        for i in range(0, doc.page_count, step):
-            if check[i].get_text() != doc[i].get_text():
+        # Every page of an ordinary file; a big one by samples, its first and last page included.
+        n = doc.page_count
+        step = 1 if n <= 300 else n // 150
+        for i in sorted(set(range(0, n, step)) | {n - 1} if n else ()):
+            a, b = check[i], doc[i]
+            if "".join(a.get_text().split()) != "".join(b.get_text().split()):
+                raise EngineError("save_failed")
+            if (len(list(a.annots())), len(list(a.widgets())), len(a.get_images())) != (
+                    len(list(b.annots())), len(list(b.widgets())), len(b.get_images())):
                 raise EngineError("save_failed")
     finally:
         check.close()
@@ -449,7 +462,9 @@ def _prune_field(doc, xref, gone: set, dead: set, depth: int) -> bool:
     if xref in gone or depth > 50:
         return False
     kind, value = doc.xref_get_key(xref, "Kids")
-    if kind != "array":
+    if kind == "xref":  # the array is an object of its own
+        value = doc.xref_object(int(value.split()[0]), compressed=True)
+    elif kind != "array":
         return True
     kids = [int(r) for r in re.findall(r"(\d+) \d+ R", value)]
     kept = [k for k in kids if _prune_field(doc, k, gone, dead, depth + 1)]
@@ -488,6 +503,19 @@ class EditEngine(Engine):
         self._lists.clear()
         self._text_flags.clear()
         return mapping
+
+    @staticmethod
+    def _page_alone(src, pno, annots=0, widgets=0):
+        """One page of a snapshot as a document of its own, to try something on.
+
+        Taken from a snapshot, as before: copying straight from the open document was much
+        faster, but test runs with it crashed now and then and the cause was not found.
+        One snapshot serves all tries of an operation, since they change nothing.
+        """
+        trial = pymupdf.open()
+        trial.insert_pdf(src, from_page=pno, to_page=pno, links=0, annots=annots,
+                         widgets=widgets)
+        return trial
 
     def _snapshot(self):
         # KEEP matters: a plain tobytes() strips encryption from self.doc itself.
@@ -576,7 +604,7 @@ class EditEngine(Engine):
             if todo:
                 child = todo.pop(0)
                 if mu.pdf_is_int(child):          # marked content on this element's page
-                    if pg in gone:
+                    if pg in gone or not pg:      # no page named: it may be a removed one
                         stack[-1][4] = True
                     else:
                         kept.append(child)
@@ -588,7 +616,7 @@ class EditEngine(Engine):
                 kind = mu.pdf_to_name(mu.pdf_dict_gets(child, "Type"))
                 here = page_of(child, pg)
                 if kind in ("MCR", "OBJR"):
-                    if here in gone:
+                    if here in gone or not here:
                         stack[-1][4] = True
                     else:
                         kept.append(child)
@@ -690,6 +718,8 @@ class EditEngine(Engine):
 
     def _op_duplicate(self, pages):
         pages = sorted(set(pages))
+        if not pages:
+            raise EngineError("no_pages")
         copy = self._snapshot()
         mapping = list(range(self.doc.page_count))
         at = pages[-1] + 1
@@ -797,8 +827,10 @@ class EditEngine(Engine):
         if self._dropped:
             self._sweep(copy, self._gone_fields)
         kw, password, protected = self._save_kw()
-        _write(copy, out, password, protected, **kw)
-        copy.close()
+        try:
+            _write(copy, out, password, protected, like=self.doc, **kw)
+        finally:
+            copy.close()
         return {"bytes": os.path.getsize(out)}
 
     def export(self, parts: list) -> list:
@@ -840,4 +872,6 @@ class EditEngine(Engine):
         if fixed:
             _set_toc(out, fixed)
         _write(out, path)
-        return {"pages": out.page_count}
+        n = out.page_count
+        out.close()
+        return {"pages": n}

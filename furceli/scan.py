@@ -21,6 +21,7 @@ MAX_PIXELS = 130_000_000      # refuse picture bombs
 MAX_SIDE = 4200               # enough for 300 dpi A3
 WORK = 900                    # long side when looking for the sheet
 A4 = math.sqrt(2)
+LETTER = 11 / 8.5
 MODES = ("color", "gray", "bw", "original")
 
 
@@ -37,12 +38,9 @@ def count_pages(path, password=""):
     """How many pages or frames a file has, and whether it has text already."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
-        doc = _open_pdf(path, password)
-        try:
-            text = sum(len(doc[i].get_text().strip()) > 40 for i in range(min(doc.page_count, 10)))
-            return {"pages": doc.page_count, "text": text > 0}
-        finally:
-            doc.close()
+        doc = _pdf(path, password)
+        text = any(len(doc[i].get_text().strip()) > 40 for i in range(doc.page_count))
+        return {"pages": doc.page_count, "text": text}
     if ext not in IMAGES:
         raise EngineError("bad_type")
     with _open_image(path) as im:
@@ -59,6 +57,31 @@ def _open_pdf(path, password):
         doc.close()
         raise EngineError("not_allowed")
     return doc
+
+
+_cache: dict = {}  # the one PDF being scanned
+
+
+def _pdf(path, password):
+    """The PDF being scanned, read once.
+
+    Every page used to read and parse the whole file again. The copy is kept in memory, so
+    the file itself stays free; a file changed since is read anew.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        raise EngineError("not_found")
+    except OSError:
+        raise EngineError("no_access")
+    key = (os.path.abspath(path), password, st.st_mtime_ns, st.st_size)
+    if _cache.get("key") != key:
+        old = _cache.pop("doc", None)
+        _cache.clear()
+        if old is not None:
+            old.close()
+        _cache["doc"], _cache["key"] = _open_pdf(path, password), key
+    return _cache["doc"]
 
 
 def _open_image(path):
@@ -88,20 +111,26 @@ def load(path, index=0, password=""):
     from PIL import Image, ImageOps
     if path.lower().endswith(".pdf"):
         import pymupdf
-        doc = _open_pdf(path, password)
-        try:
-            page = doc.load_page(index)
-            w, h = page.rect.width, page.rect.height
-            dpi = min(300, 72 * MAX_SIDE / max(w, h))
-            pix = page.get_pixmap(dpi=max(int(dpi), 20), colorspace=pymupdf.csRGB, alpha=False)
-            return np.frombuffer(pix.samples, np.uint8).reshape(
-                pix.height, pix.stride)[:, :pix.width * 3].reshape(pix.height, pix.width, 3).copy()
-        finally:
-            doc.close()
+        doc = _pdf(path, password)
+        if not 0 <= index < doc.page_count:
+            raise EngineError("bad_image")
+        page = doc.load_page(index)
+        w, h = page.rect.width, page.rect.height
+        if min(w, h) <= 0:
+            raise EngineError("bad_image")
+        k = min(300 / 72, MAX_SIDE / max(w, h))
+        if min(w, h) * k < 16:
+            raise EngineError("bad_image")
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(k, k), colorspace=pymupdf.csRGB,
+                              alpha=False)
+        return np.frombuffer(pix.samples, np.uint8).reshape(
+            pix.height, pix.stride)[:, :pix.width * 3].reshape(pix.height, pix.width, 3).copy()
     with _open_image(path) as im:
         try:
             if getattr(im, "n_frames", 1) > 1:
                 im.seek(min(index, im.n_frames - 1))
+                if im.width * im.height > MAX_PIXELS:  # every frame has a size of its own
+                    raise EngineError("too_big")
             im = ImageOps.exif_transpose(im)
             if im.mode in ("RGBA", "LA", "P", "PA"):
                 im = im.convert("RGBA")
@@ -420,9 +449,9 @@ def flatten(img, corners):
         np.linalg.norm(quad[1] - quad[0]) + np.linalg.norm(quad[2] - quad[3]), 1e-6)
     if not .55 < ratio / plain < 1.8:  # the estimate is unstable when the view is almost flat
         ratio = plain
-    for known in (A4, 1 / A4):
-        if abs(ratio / known - 1) < .09:
-            ratio = known
+    known = min((A4, 1 / A4, LETTER, 1 / LETTER), key=lambda r: abs(ratio / r - 1))
+    if abs(ratio / known - 1) < .09:
+        ratio = known
     wide = max(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[2] - quad[3]))
     tall = max(np.linalg.norm(quad[3] - quad[0]), np.linalg.norm(quad[2] - quad[1]))
     W = max(wide, tall / ratio)
@@ -720,15 +749,17 @@ def upright(img, languages):
     down = max(_profile(side, a) for a in (-2, -1, 0, 1, 2)) / side.shape[0]
     # Rows and columns of tables can mislead: only a clear ratio leaves directions out.
     order = (0, 2, 1, 3) if across >= down else (1, 3, 0, 2)
-    if max(across, down) > 3 * min(across, down):
-        order = order[:2]
+    likely = order[:2] if max(across, down) > 3 * min(across, down) else order
     side = max(img.shape[:2])
     f = min(max(1500 / side, 1.0), 2.0) if side < 1500 else min(1700 / side, 1.0)
     probe = cv2.resize(enhance(img, "gray"), None, fx=f, fy=f,
                        interpolation=cv2.INTER_CUBIC if f > 1 else cv2.INTER_AREA)
-    scores = {}
+    scores, shares = {}, [0.0]
     for q in order:
+        if q not in likely and max(shares) > .5:  # what looked likely does read
+            break
         scores[q], share = _reads(turn(probe, q), languages)
+        shares.append(share)
         if scores[q] >= 80 and share > .55:  # reads like text: no need to try the others
             return q
     best = max(scores, key=lambda q: (scores[q], q == 0))
@@ -768,11 +799,18 @@ def recognise(img, width, height, languages):
 # the whole way
 # ---------------------------------------------------------------------------
 def analyse(path, index=0, password="", languages="kat+eng"):
-    """What a page needs: corners (or None), quarter turns."""
+    """What a page needs: corners (or None), quarter turns.
+
+    The direction is found by reading. Without language files the page keeps its direction:
+    only recognising text itself cannot do without them.
+    """
+    from .features import TESSDATA
+    languages = "+".join(x for x in languages.split("+") if os.path.exists(
+        os.path.join(TESSDATA, x + ".traineddata")))
     img = load(path, index, password)
     corners = find_sheet(img)
     flat = flatten(img, corners) if corners else img
-    return {"corners": corners, "turn": upright(flat, languages), "size": img.shape[1::-1]}
+    return {"corners": corners, "turn": upright(flat, languages) if languages else 0, "size": img.shape[1::-1]}
 
 
 def _roomy(img, side=2300):
@@ -867,13 +905,15 @@ def build_page(path, index, o, out, password=""):
         words = recognise(gray, width, height, o["languages"])
     eng = Features()
     eng.doc = pymupdf.open()
-    page = eng.doc.new_page(width=width, height=height)
-    page.insert_image(page.rect, stream=_encode(done, mode, width, o.get("dpi", 200)))
-    page = None
-    if words:
-        eng._op_textlayer({0: words})
-    _write(eng.doc, out)
-    eng.doc.close()
+    try:
+        page = eng.doc.new_page(width=width, height=height)
+        page.insert_image(page.rect, stream=_encode(done, mode, width, o.get("dpi", 200)))
+        page = None
+        if words:
+            eng._op_textlayer({0: words})
+        _write(eng.doc, out)
+    finally:
+        eng.doc.close()
     return len(words)
 
 
@@ -881,16 +921,17 @@ def join(parts, out, title=""):
     import pymupdf
     from .engine import _write
     doc = pymupdf.open()
-    for p in parts:
-        with pymupdf.open(p) as d:
-            doc.insert_pdf(d)
-    if not doc.page_count:
-        raise EngineError("no_pages")
-    doc.set_metadata({"title": title, "producer": "ETRATI", "creator": "ETRATI"})
-    _write(doc, out)
-    n = doc.page_count
-    doc.close()
-    return n
+    try:
+        for p in parts:
+            with pymupdf.open(p) as d:
+                doc.insert_pdf(d)
+        if not doc.page_count:
+            raise EngineError("no_pages")
+        doc.set_metadata({"title": title, "producer": "ETRATI", "creator": "ETRATI"})
+        _write(doc, out)
+        return doc.page_count
+    finally:
+        doc.close()
 
 
 __all__ = ["analyse", "preview", "build_page", "join", "count_pages"]

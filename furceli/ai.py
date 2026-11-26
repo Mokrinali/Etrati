@@ -200,7 +200,10 @@ class Chat(QObject):
 
     @staticmethod
     def _explain(e):
-        import anthropic
+        try:
+            import anthropic
+        except ImportError:
+            return "AI-ის ბიბლიოთეკა (anthropic) დაყენებული არ არის."
         if isinstance(e, Refused):
             return "მოდელმა ამ კითხვაზე პასუხი არ გასცა."
         if isinstance(e, anthropic.AuthenticationError):
@@ -355,6 +358,9 @@ class AiPanel(QWidget):
             if sum(map(len, texts)) > MAX_CHARS:
                 self._say("დოკუმენტი ძალიან დიდია. ჯერ ამოიღეთ საჭირო გვერდები ცალკე ფაილად.", "gray")
                 return
+            if self.chat is not None:
+                self.chat.stop()
+                self._say("დოკუმენტი შეიცვალა, ამიტომ საუბარი თავიდან იწყება.", "gray")
             model = self.settings.value("ai/model", MODELS[0][1])
             self.chat = Chat(key, model, texts, self._client)
             self.chat.delta.connect(self._delta)

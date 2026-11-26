@@ -23,17 +23,33 @@ def make_backup(path: str) -> str:
     root = backup_dir()
     stem, ext = os.path.splitext(os.path.basename(path))
     out = unique_path(os.path.join(root, f"{stem} {time.strftime('%Y-%m-%d %H-%M-%S')}{ext}"))
-    shutil.copy2(path, out)
-    if os.path.getsize(out) != os.path.getsize(path):
-        raise OSError("backup is incomplete")
-    os.utime(out)  # age counts from the backup, not from the original
-    kept = sorted((os.path.join(root, f) for f in os.listdir(root)), key=os.path.getmtime)
-    for old in kept[:-KEEP_BACKUPS]:
-        try:
+    try:
+        shutil.copy2(path, out)
+        if os.path.getsize(out) != os.path.getsize(path):
+            raise OSError("backup is incomplete")
+        _flush(out)
+        os.utime(out)  # age counts from the backup, not from the original
+    except OSError:  # half a copy must not count as one of the kept backups
+        with contextlib.suppress(OSError):
+            os.remove(out)
+        raise
+    kept = []
+    with contextlib.suppress(OSError):
+        for entry in os.scandir(root):
+            with contextlib.suppress(OSError):  # somebody else may tidy up as well
+                if entry.is_file():
+                    kept.append((entry.stat().st_mtime, entry.path))
+    for _, old in sorted(kept)[:-KEEP_BACKUPS]:
+        with contextlib.suppress(OSError):
             os.remove(old)
-        except OSError:
-            pass
     return out
+
+
+def _flush(path: str):
+    """Make Windows write the file to the disk now: a power cut must not leave it empty."""
+    with contextlib.suppress(OSError):  # read-only files and some network drives refuse
+        with open(path, "rb+") as f:
+            os.fsync(f.fileno())
 
 
 def unique_path(path: str) -> str:
@@ -65,9 +81,17 @@ def _replace(tmp: str, target: str):
     os.replace(tmp, target)
 
 
+def discard(path: str):
+    """Remove a temporary file; one that cannot be removed must not hide the real outcome."""
+    with contextlib.suppress(OSError):
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def put_in_place(tmp: str, target: str) -> str | None:
     """Replace target by tmp, backing up what was there. Returns the backup path."""
     saved = make_backup(target) if os.path.exists(target) else None
+    _flush(tmp)
     _replace(tmp, target)
     return saved
 
@@ -80,8 +104,10 @@ def new_session() -> str:
     """A private temporary folder that names its owner, so leftovers can be found."""
     import psutil
     path = tempfile.mkdtemp(prefix="furceli_")
-    with open(os.path.join(path, MARK), "w") as f:
+    mark = os.path.join(path, MARK)
+    with open(mark + ".new", "w") as f:
         f.write(f"{os.getpid()} {psutil.Process().create_time()}")
+    os.replace(mark + ".new", mark)  # a half-written mark would look like a dead owner's
     return path
 
 
@@ -140,7 +166,10 @@ def from_internet(path) -> bool:
 
 def safe_name(text: str) -> str:
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", text)
-    return " ".join(text.split()).strip(". ")[:80] or "გვერდები"
+    text = " ".join(text.split()).strip(". ")[:80].strip(". ") or "გვერდები"
+    if re.fullmatch(r"(con|prn|aux|nul|com\d|lpt\d)(\..*)?", text, re.I):
+        text = "_" + text  # Windows keeps these names for devices
+    return text
 
 
 def parse_group(text: str, n: int) -> list[int]:

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDia
 
 from . import files
 from .client import TaskError, run_task
+from .dialogs import error_text
 
 
 def _rgb(c: QColor):
@@ -129,8 +130,9 @@ class LineDialog(QDialog):
         lay.addWidget(self._text)
         form = QFormLayout()
         self._size = QDoubleSpinBox()
-        self._size.setRange(3, 300)
+        self._size.setRange(.5, 2000)
         self._size.setValue(round(line["size"], 2))
+        self._shown = self._size.value()
         self._color = ColorButton(line["color"])
         self._bold, self._italic = QCheckBox("მუქი"), QCheckBox("დახრილი")
         self._bold.setChecked(line["bold"])
@@ -151,7 +153,9 @@ class LineDialog(QDialog):
         return self._text.text()
 
     def style_(self):
-        return {"size": self._size.value(), "color": self._color.value(),
+        size = self._size.value()
+        return {"size": self._line["size"] if size == self._shown else size,
+                "color": self._color.value(),
                 "bold": self._bold.isChecked(), "italic": self._italic.isChecked(),
                 "serif": self._line["serif"], "mono": self._line["mono"]}
 
@@ -225,7 +229,9 @@ class WatermarkDialog(PagesMixin, QDialog):
         form.addRow(_buttons(self, "დამატება", self.try_accept))
 
     def try_accept(self):
-        if self._text.text().strip() and self.check_pages():
+        if not self._text.text().strip():
+            QMessageBox.warning(self, self.windowTitle(), "ჩაწერეთ ტექსტი.")
+        elif self.check_pages():
             self.accept()
 
     def text(self):
@@ -278,6 +284,12 @@ class HeaderDialog(PagesMixin, QDialog):
         self.add_pages(form, n)
         form.addRow(_buttons(self, "დამატება", self.try_accept))
 
+    def try_accept(self):
+        if not any(w.text().strip() for w in self._texts.values()):
+            QMessageBox.warning(self, self.windowTitle(), "ჩაწერეთ ტექსტი ერთ ადგილზე მაინც.")
+        else:
+            super().try_accept()
+
     def options(self):
         return {"texts": {k: w.text() for k, w in self._texts.items()},
                 "size": self._size.value(), "margin": self._margin.value(),
@@ -297,11 +309,13 @@ class ScrubDialog(QDialog):
                               ("files", "მიმაგრებული ფაილები", True),
                               ("javascript", "JavaScript", True),
                               ("comments", "ყველა კომენტარი", False),
-                              ("hidden", "უხილავი ტექსტი (OCR ტექსტიც წაიშლება)", False)):
+                              ("hidden", "უხილავი ტექსტი და გამორთული ფენები (OCR ტექსტიც წაიშლება)",
+                               False)):
             self._boxes[key] = QCheckBox(text)
             self._boxes[key].setChecked(on)
             lay.addWidget(self._boxes[key])
-        note = QLabel("სარეზერვო ასლებში ეს მონაცემები რჩება. შენახვის შემდეგ პროგრამა შემოგთავაზებთ მათ წაშლას.")
+        note = QLabel("ფოტოებიდან (JPEG) კამერისა და ადგილის მონაცემებიც იშლება; სხვა ფორმატის სურათებში "
+                      "ისინი რჩება. სარეზერვო ასლებში ეს ყველაფერი რჩება. შენახვის შემდეგ პროგრამა შემოგთავაზებთ მათ წაშლას.")
         note.setWordWrap(True)
         lay.addWidget(note)
         lay.addWidget(_buttons(self, "წაშლა"))
@@ -329,6 +343,9 @@ class ProtectDialog(QDialog):
         form.addRow("გახსნის პაროლი:", self._user)
         form.addRow("გაიმეორეთ:", self._user2)
         form.addRow("მფლობელის პაროლი (შეზღუდვებისთვის):", self._owner)
+        self._owner2 = QLineEdit()
+        self._owner2.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("გაიმეორეთ:", self._owner2)
         self._perms = {}
         for key, text in (("print", "ბეჭდვა"), ("copy", "კოპირება"),
                           ("annotate", "კომენტარი და ფორმის შევსება"), ("modify", "შეცვლა")):
@@ -343,6 +360,9 @@ class ProtectDialog(QDialog):
 
     def _check(self):
         if self._mode.currentIndex() == 0:
+            if self._owner.text() != self._owner2.text():
+                QMessageBox.warning(self, self.windowTitle(), "მფლობელის პაროლები არ ემთხვევა.")
+                return
             if self._user.text() != self._user2.text():
                 QMessageBox.warning(self, self.windowTitle(), "პაროლები არ ემთხვევა.")
                 return
@@ -511,9 +531,13 @@ class SignaturePad(QDialog):
             if os.path.isfile(self.file.text()):
                 self.path = self.file.text()
                 self.accept()
+            else:
+                QMessageBox.warning(self, self.windowTitle(), "აირჩიეთ სურათის ფაილი.")
             return
         img = self.canvas.image() if i == 0 else self._typed_image()
         if img is None:
+            QMessageBox.warning(self, self.windowTitle(),
+                                "ჯერ დახატეთ ხელმოწერა." if i == 0 else "ჩაწერეთ სახელი და გვარი.")
             return
         # inside the session folder, which is removed with the tab
         self.path = files.unique_path(os.path.join(self._folder or files.new_session(),
@@ -582,17 +606,32 @@ class SignDialog(QDialog):
             return
         pw, ok = QInputDialog.getText(self, "ახალი სერტიფიკატი", "პაროლი (მინ. 6 სიმბოლო):",
                                       QLineEdit.EchoMode.Password)
-        if not ok or len(pw) < 6:
+        if not ok:
+            return
+        if len(pw) < 6:
+            QMessageBox.warning(self, self.windowTitle(), "პაროლი მინიმუმ 6 სიმბოლო უნდა იყოს.")
+            return
+        again, ok = QInputDialog.getText(self, "ახალი სერტიფიკატი", "გაიმეორეთ პაროლი:",
+                                         QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        if again != pw:
+            QMessageBox.warning(self, self.windowTitle(), "პაროლები არ ემთხვევა.")
             return
         out, _ = QFileDialog.getSaveFileName(self, "სად შევინახო", files.unique_path(
             os.path.expanduser(f"~/{files.safe_name(name)}.pfx")), "სერტიფიკატი (*.pfx)")
         if not out:
             return
+        tmp = files.temp_name(out)
         try:
-            run_task(self.client, "make_certificate", (out, pw, name.strip()), "იქმნება…", self)
-        except TaskError:
-            QMessageBox.warning(self, self.windowTitle(), "სერტიფიკატი ვერ შეიქმნა.")
+            run_task(self.client, "make_certificate", (tmp, pw, name.strip()), "იქმნება…", self)
+            files.put_in_place(tmp, out)  # a certificate that was there is kept as a backup
+        except (TaskError, OSError) as e:
+            QMessageBox.warning(self, self.windowTitle(), "სერტიფიკატი ვერ შეიქმნა. " + error_text(
+                str(e) if isinstance(e, TaskError) else "no_access"))
             return
+        finally:
+            files.discard(tmp)
         self._pfx.setText(out)
         self._pw.setText(pw)
 
@@ -610,6 +649,27 @@ class SignDialog(QDialog):
 
     def options(self):
         return {"reason": self._reason.text().strip(), "location": self._place.text().strip()}
+
+
+class ChoicesDialog(QDialog):
+    """Several choices of one list field."""
+
+    def __init__(self, title, items, chosen, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("აირჩიეთ ერთი ან რამდენიმე:"))
+        self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for t in items:
+            self.list.addItem(t)
+            self.list.item(self.list.count() - 1).setSelected(t in chosen)
+        lay.addWidget(self.list)
+        lay.addWidget(_buttons(self))
+
+    def chosen(self):
+        return [self.list.item(i).text() for i in range(self.list.count())
+                if self.list.item(i).isSelected()]
 
 
 class VerifyDialog(QDialog):
@@ -644,9 +704,11 @@ class VerifyDialog(QDialog):
                 out.append("⚠ ხელმოწერის შემდეგ ფაილს რაღაც დაემატა")
         return out
 
-    def _row(self, r):
-        lab = QLabel("\n".join([r["signer"] or r["field"]] + ([r["time"]] if r["time"] else [])
-                               + self.describe(r)))
+    @staticmethod
+    def _row(r):
+        when = [r["time"] + (" (დროის შტამპით)" if r.get("time_proved") else
+                             " (ხელმომწერის კომპიუტერის დრო, დადასტურებული არ არის)")] if r["time"] else []
+        lab = QLabel("\n".join([r["signer"] or r["field"]] + when + VerifyDialog.describe(r)))
         lab.setTextFormat(Qt.TextFormat.PlainText)
         lab.setWordWrap(True)
         lab.setFrameShape(QLabel.Shape.StyledPanel)
@@ -709,5 +771,8 @@ class CompareDialog(QDialog):
     def _save(self):
         out, _ = QFileDialog.getSaveFileName(self, "ანგარიში", "შედარება.txt", "ტექსტი (*.txt)")
         if out:
-            with open(out, "w", encoding="utf-8-sig") as f:
-                f.write("\n".join(self.list.item(i).text() for i in range(self.list.count())))
+            try:
+                with open(out, "w", encoding="utf-8-sig") as f:
+                    f.write("\n".join(self.list.item(i).text() for i in range(self.list.count())))
+            except OSError:
+                QMessageBox.warning(self, self.windowTitle(), error_text("no_access"))

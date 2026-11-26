@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 from PySide6.QtCore import QEventLoop, QRectF, Qt
 from PySide6.QtGui import QPageLayout, QPainter
@@ -57,13 +58,13 @@ def _orient(printer, size):
 
 def print_pages(doc, printer: QPrinter, pages: list[int], parent=None) -> bool:
     """Print the given page indexes. False when the user cancelled."""
-    prog = QProgressDialog("იბეჭდება…", "გაუქმება", 0, len(pages), parent)
-    prog.setWindowModality(Qt.WindowModality.WindowModal)
-    prog.setMinimumDuration(400)
     _orient(printer, doc.sizes[pages[0]])
     painter = QPainter()
     if not painter.begin(printer):
         raise PrintError("პრინტერთან დაკავშირება ვერ მოხერხდა.")
+    prog = QProgressDialog("იბეჭდება…", "გაუქმება", 0, len(pages), parent)
+    prog.setWindowModality(Qt.WindowModality.WindowModal)
+    prog.setMinimumDuration(400)
     try:
         for n, pno in enumerate(pages):
             prog.setValue(n)
@@ -81,8 +82,12 @@ def print_pages(doc, printer: QPrinter, pages: list[int], parent=None) -> bool:
             if img is None:
                 printer.abort()
                 return False
-            area = painter.viewport()
-            k = min(area.width() / w, area.height() / h)
+            # The painter keeps the first sheet's shape: a turned sheet needs its own area.
+            area = printer.pageLayout().paintRectPixels(printer.resolution())
+            area.moveTo(0, 0)
+            painter.setViewport(area)
+            painter.setWindow(area)
+            k =min(area.width() / w, area.height() / h)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             painter.drawImage(QRectF((area.width() - w * k) / 2, (area.height() - h * k) / 2,
                                      w * k, h * k), img)
@@ -100,7 +105,7 @@ def print_pages(doc, printer: QPrinter, pages: list[int], parent=None) -> bool:
 def choose_and_print(doc, parent) -> bool:
     n = len(doc.sizes)
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    printer.setDocName(doc.path)
+    printer.setDocName(os.path.basename(doc.path))  # the queue may be seen by others
     dlg = QPrintDialog(printer, parent)
     dlg.setOption(QPrintDialog.PrintDialogOption.PrintPageRange, True)
     dlg.setOption(QPrintDialog.PrintDialogOption.PrintCurrentPage, True)

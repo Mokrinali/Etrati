@@ -17,7 +17,12 @@ function Update-Shell {
 }
 
 if ($Remove) {
-    foreach ($key in $prog, $caps) { if (Test-Path $key) { Remove-Item $key -Recurse -Confirm:$false } }
+    foreach ($key in $prog, "$caps\Capabilities") {
+        if (Test-Path $key) { Remove-Item $key -Recurse -Confirm:$false }
+    }
+    if ((Test-Path $caps) -and -not (Get-ChildItem $caps) -and -not (Get-Item $caps).Property) {
+        Remove-Item $caps -Confirm:$false  # only when nothing else is kept there
+    }
     foreach ($pair in @(@($apps, 'ETRATI'), @($with, 'ETRATI.pdf'))) {
         if ((Test-Path $pair[0]) -and ((Get-Item $pair[0]).Property -contains $pair[1])) {
             Remove-ItemProperty $pair[0] -Name $pair[1] -Confirm:$false
@@ -31,7 +36,7 @@ if ($Remove) {
 $python = Join-Path $root '.venv\Scripts\pythonw.exe'
 $start = Join-Path $root 'etrati.pyw'
 $icon = Join-Path $root 'furceli\assets\furceli.ico'
-foreach ($file in $python, $start, $icon) { if (-not (Test-Path $file)) { throw "Missing: $file" } }
+foreach ($file in $python, $start, $icon) { if (-not (Test-Path -LiteralPath $file)) { throw "Missing: $file" } }
 
 foreach ($key in "$prog\DefaultIcon", "$prog\Application", "$prog\shell\open\command",
                  "$caps\Capabilities\FileAssociations", $apps, $with) {

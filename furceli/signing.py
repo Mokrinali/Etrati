@@ -64,11 +64,21 @@ def sign(src, out, password, pfx, pfx_password, o):
                 w._encrypt = w.add_object(generic.DictionaryObject(dict(w._encrypt)))
     except (PdfReadError, ValueError, KeyError):
         raise EngineError("damaged")
-    name = "Signature" + secrets.token_hex(4)
-    spec = fields.SigFieldSpec(name)
     style = looks = None
+    if o.get("field"):  # the form has a place for it
+        name, spec = o["field"], None
+        found = list(fields.enumerate_sig_fields(w.prev, with_name=name))
+        if not found:
+            raise EngineError("stale")
+        if found[0][1] is not None:
+            raise EngineError("already_signed")
+    else:
+        name = "Signature" + secrets.token_hex(4)
+        spec = fields.SigFieldSpec(name)
+        if o.get("box"):
+            spec = fields.SigFieldSpec(name, on_page=o["page"],
+                                       box=tuple(int(x) for x in o["box"]))
     if o.get("box"):
-        spec = fields.SigFieldSpec(name, on_page=o["page"], box=tuple(int(x) for x in o["box"]))
         looks = files.new_session()
         try:
             style = _stamp(src, password, o, signer, looks)
@@ -80,7 +90,7 @@ def sign(src, out, password, pfx, pfx_password, o):
         subfilter=fields.SigSeedSubFilter.PADES)
     try:
         result = signers.PdfSigner(meta, signer, stamp_style=style, new_field_spec=spec).sign_pdf(
-            w)
+            w, existing_fields_only=spec is None)
     except Exception as e:
         raise EngineError(f"sign_failed: {type(e).__name__}")
     finally:
@@ -155,7 +165,10 @@ def verify(path, password=""):
                 row["whole"] = st.coverage.name in ("ENTIRE_FILE", "ENTIRE_REVISION")
                 row["changed_later"] = st.coverage.name != "ENTIRE_FILE"
                 row["modified_badly"] = not bool(getattr(st, "docmdp_ok", True))
-                when = st.signer_reported_dt
+                # Only a time stamp proves the time: otherwise it is the signer's clock.
+                ts = st.timestamp_validity
+                row["time_proved"] = bool(ts and ts.intact and ts.valid and ts.trusted)
+                when = ts.timestamp if row["time_proved"] else st.signer_reported_dt
                 row["time"] = when.strftime("%Y-%m-%d %H:%M") if when else ""
             except Exception as e:
                 row["note"] = f"{type(e).__name__}"

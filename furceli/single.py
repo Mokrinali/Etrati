@@ -8,7 +8,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QDir, QLockFile, QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
@@ -36,6 +36,13 @@ def hand_over(paths, name=None, wait=3000) -> bool:
     ok = sock.waitForReadyRead(wait) and bytes(sock.readAll().data()).startswith(b"ok")
     sock.abort()
     return ok
+
+
+def claim():
+    """The right to be the running program; None when another start already has it."""
+    lock = QLockFile(os.path.join(QDir.tempPath(), channel() + ".lock"))
+    lock.setStaleLockTime(0)  # only a program that is really gone loses it
+    return lock if lock.tryLock(0) else None
 
 
 class Receiver(QObject):

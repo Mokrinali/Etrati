@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import bisect
 import math
+import weakref
 from collections import OrderedDict
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QAbstractScrollArea
 
@@ -17,8 +18,15 @@ from .client import P_TEXT, P_VISIBLE
 
 TILE = 1024
 CACHE_BYTES = 256 * 1024 * 1024
+HIDDEN_BYTES = 32 * 1024 * 1024    # what a tab in the background may keep
+TOTAL_BYTES = 384 * 1024 * 1024    # all tabs together
+FAR_PAGES = 60                     # text of pages farther away is no longer waited for
+KEEP_PAGES = 400                   # pages whose text, links and fields are remembered
 ZOOM_MIN, ZOOM_MAX = 0.1, 8.0
 GAP = 14  # logical px between pages
+
+
+_VIEWS: "weakref.WeakSet[PageView]" = weakref.WeakSet()  # every page view, for _share()
 
 
 def to_image(value) -> QImage:
@@ -50,6 +58,7 @@ class PageView(QAbstractScrollArea):
         self._content = (0, 0)
         self._tiles: OrderedDict = OrderedDict()
         self._tile_bytes = 0
+        _VIEWS.add(self)
         self._bad: set = set()
         self.chars: dict[int, list] = {}
         self.links: dict[int, list] = {}
@@ -404,6 +413,12 @@ class PageView(QAbstractScrollArea):
                         key = ("tile", p, s, rot, tx, ty, self.rev)
                         wanted[key] = ((tx, ty, x1, y1), box.intersects(seen))
         self.client.cancel(lambda k: k[0] == "tile" and k not in wanted)
+        a, b = self._page - FAR_PAGES, self._page + FAR_PAGES
+        rng = self._range()
+        if rng:  # the selection's text is needed wherever it is
+            a, b = min(a, rng[0][0]), max(b, rng[1][0])
+        self.client.cancel(lambda k: k[0] in ("chars", "links", "widgets")
+                           and not a <= k[1] <= b)
         for key, (tile, visible) in wanted.items():
             if key in self._tiles:
                 self._tiles.move_to_end(key)
@@ -428,20 +443,70 @@ class PageView(QAbstractScrollArea):
             if key[2] != self.scale or key[3] != self.rotation:
                 return
             img = to_image(value)
+            before = self._tiles.pop(key, None)
+            if before is not None:
+                self._tile_bytes -= before.sizeInBytes()
+            self._stale.pop(key[:-1], None)
             self._tiles[key] = img
             self._tile_bytes += img.sizeInBytes()
-            while self._tile_bytes > CACHE_BYTES and len(self._tiles) > 1:
-                _, old = self._tiles.popitem(last=False)
-                self._tile_bytes -= old.sizeInBytes()
+            self._trim(CACHE_BYTES)
+            self._share()
             self.viewport().update()
         elif key[0] == "chars":
             self.chars[key[1]] = [(c, i) for i, ln in enumerate(value) for c in ln]
+            self._forget_far(self.chars)
             self.viewport().update()
         elif key[0] == "links":
             self.links[key[1]] = value
+            self._forget_far(self.links)
         elif key[0] == "widgets":
             self.widgets[key[1]] = value
+            self._forget_far(self.widgets)
             self.viewport().update()
+
+    def _trim(self, limit):
+        while self._tile_bytes > limit and len(self._tiles) > 1:
+            _, old = self._tiles.popitem(last=False)
+            self._tile_bytes -= old.sizeInBytes()
+
+    def _share(self):
+        """All tabs together stay within one budget: those in the background give first."""
+        views = []
+        for v in list(_VIEWS):
+            try:
+                views.append((v is self, v.isVisible(), v))
+            except RuntimeError:  # the tab was closed: its pictures went with it
+                _VIEWS.discard(v)
+        over = sum(v._tile_bytes for *_, v in views) - TOTAL_BYTES
+        for *_, v in sorted(views, key=lambda t: t[:2]):
+            if over <= 0:
+                return
+            before = v._tile_bytes
+            v._trim(max(before - over, 0))
+            over -= before - v._tile_bytes
+
+    def _forget_far(self, store):
+        """Keep the text of the pages around the reader; the rest is read again when needed."""
+        if len(store) <= KEEP_PAGES:
+            return
+        keep = set(self._visible_pages(1))
+        rng = self._range()
+        if rng:
+            keep.update(range(rng[0][0], rng[1][0] + 1))
+        for p in sorted(store, key=lambda p: -abs(p - self._page)):
+            if len(store) <= KEEP_PAGES * 3 // 4:
+                break
+            if p not in keep:
+                del store[p]
+
+    def hideEvent(self, e):
+        self._trim(HIDDEN_BYTES)  # other tabs need the memory more
+        super().hideEvent(e)
+
+    def event(self, e):
+        if e.type() == QEvent.Type.DevicePixelRatioChange and self.sizes:
+            self._change(lambda: None)  # moved to a screen with another scaling
+        return super().event(e)
 
     def on_failed(self, key):
         self._bad.add(key)

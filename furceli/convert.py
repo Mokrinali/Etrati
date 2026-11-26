@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+import unicodedata
 import zipfile
 
 import pymupdf
@@ -29,6 +30,8 @@ def _tell(status, value):
         notify((status, value))
 
 
+MAX_UNPACKED = 1024 * 1024 * 1024    # an Office file, unpacked
+MAX_INLINE = 200 * 1024 * 1024       # pictures and styles of one HTML page
 BLOCKED = "file:///C:/furceli-blocked"
 
 
@@ -71,6 +74,78 @@ def _no_refresh(data: bytes) -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+SHEET_NS = ("http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            "http://purl.oclc.org/ooxml/spreadsheetml/main")
+
+
+def _part(data: bytes):
+    from lxml import etree
+    try:
+        root = etree.fromstring(data, etree.XMLParser(
+            resolve_entities=False, load_dtd=False, no_network=True, huge_tree=True))
+    except (etree.XMLSyntaxError, ValueError):
+        raise EngineError("untrusted")
+    if root.getroottree().docinfo.doctype:
+        raise EngineError("untrusted")
+    return root
+
+
+def _settled(data: bytes) -> bytes:
+    """Word fields locked, so that opening asks nothing and fetches nothing.
+
+    A field marked as out of date (or a document asking for all fields to be updated) makes
+    Word fetch linked pictures and texts on opening, or stop at a security question that
+    nobody sees. A locked field keeps the result saved in the file.
+    """
+    from lxml import etree
+    if b"fld" not in data and b"updateFields" not in data:
+        return data
+    root = _part(data)
+    w = "{%s}" % WORD_NS
+    for el in list(root.iter(w + "fldChar", w + "fldSimple", w + "updateFields")):
+        if el.tag == w + "updateFields":
+            el.getparent().remove(el)
+        elif el.tag == w + "fldSimple" or el.get(w + "fldCharType") == "begin":
+            el.attrib.pop(w + "dirty", None)
+            el.set(w + "fldLock", "1")
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+FETCHES = re.compile(r"(?<![\w.])(?:_xlfn\.|_xlws\.)?(?:WEBSERVICE|IMAGE|STOCKHISTORY|RTD|CUBE[A-Z]*)"
+                     r"\s*\(", re.I)
+
+
+def _fetches(formula: str) -> bool:
+    return bool(FETCHES.search(re.sub(r'"(?:[^"]|"")*"', '""', formula)))  # not in texts
+
+
+def _no_fetch(data: bytes) -> bytes:
+    """Formulas that fetch from outside (WEBSERVICE, IMAGE, RTD, ...) lose the formula and keep
+    the value saved with them; everything else is still worked out as usual."""
+    from lxml import etree
+    if not FETCHES.search(data.decode("utf-8", "replace")):
+        return data
+    root = _part(data)
+    ns = etree.QName(root).namespace
+    if ns not in SHEET_NS:
+        return data
+    f, gone = "{%s}f" % ns, set()
+    cells = [el for el in root.iter(f)]
+    for el in cells:
+        if _fetches(el.text or ""):
+            if el.get("t") == "shared" and el.get("si") is not None:
+                gone.add(el.get("si"))
+            el.getparent().remove(el)
+    for el in cells:  # cells that share a removed formula
+        if el.getparent() is not None and el.get("t") == "shared" and el.get("si") in gone:
+            el.getparent().remove(el)
+    for el in root.iter("{%s}definedName" % ns):
+        if _fetches(el.text or ""):
+            el.text = "#N/A"
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
 def without_links(src, folder):
     """A copy of an Office file whose external pictures, objects and templates lead nowhere.
 
@@ -81,12 +156,18 @@ def without_links(src, folder):
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         if len({i.filename.lower() for i in zin.infolist()}) != len(zin.infolist()):
             raise EngineError("untrusted")  # two parts under one name: which would Office read?
+        if sum(i.file_size for i in zin.infolist()) > MAX_UNPACKED:
+            raise EngineError("too_big")
         for item in zin.infolist():
             data, name = zin.read(item), item.filename.lower()
             if name.endswith(".rels"):
                 data = _clean_rels(data)
             elif name.endswith("connections.xml") or "pivotcachedefinition" in name:
                 data = _no_refresh(data)
+            elif name.endswith(".xml") and name.startswith("word/"):
+                data = _settled(data)
+            elif name.endswith(".xml") and name.startswith("xl/"):
+                data = _no_fetch(data)
             zout.writestr(item.filename, data)
     try:  # keep the mark of a downloaded file: Office is stricter with those
         with open(src + ":Zone.Identifier", "rb") as f:
@@ -99,7 +180,9 @@ def without_links(src, folder):
 
 
 def _safe_source(src, folder, trusted=False):
-    if os.path.splitext(src)[1].lower() in OOXML and zipfile.is_zipfile(src):
+    if os.path.splitext(src)[1].lower() in OOXML:
+        if not zipfile.is_zipfile(src):  # not what its name says, and nobody was asked about it
+            raise EngineError("untrusted")
         return without_links(src, folder)
     if not trusted:
         raise EngineError("untrusted")  # old formats cannot be cleaned: the user decides
@@ -212,8 +295,10 @@ def _slides(src, out, trusted=False):
             app.AutomationSecurity = 3
             show = app.Presentations.Open(_safe_source(src, tmp, trusted), ReadOnly=True,
                                           Untitled=False, WithWindow=False)
-            show.SaveAs(out, 32)
-            show.Close()
+            try:
+                show.SaveAs(out, 32)
+            finally:
+                show.Close()
         finally:
             app.AutomationSecurity = old
             if not running and app.Presentations.Count:
@@ -237,6 +322,7 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
 DROP_TAGS = {"script", "iframe", "frame", "frameset", "object", "embed", "applet", "base", "portal",
              "audio", "video", "source", "track", "noscript", "template", "fencedframe"}
+RAW_TAGS = {"xmp", "plaintext", "noembed", "noframes", "listing"}
 KEEP_ATTRS = {"class", "id", "style", "width", "height", "align", "valign", "colspan", "rowspan",
               "border", "cellpadding", "cellspacing", "bgcolor", "color", "face", "size", "alt",
               "title", "lang", "dir", "start", "type", "value", "span", "nowrap", "name", "scope",
@@ -298,8 +384,19 @@ def harmless_html(data: bytes, folder: str) -> bytes:
     except Exception:
         raise EngineError("convert_failed")
 
+    total = 0
+
     def css(t):
-        t = re.sub(r"@import[^;]*;?", "", t or "", flags=re.I)
+        # Browsers read styles inside svg and math as markup: there must be none in them.
+        t = re.sub(r"<!--|-->", "", t or "")
+
+        def char(m):  # an escape may spell the words that are looked for below
+            n = int(m.group(1), 16) if m.group(1) else ord(m.group(2))
+            return chr(n) if 32 <= n < 0x110000 and not 0xD800 <= n < 0xE000 and n != 92 else " "
+        t = re.sub(r"\\(?:([0-9a-fA-F]{1,6})\s?|(.|\n))", char, t).replace("\\", " ")
+        t = re.sub(r"(image-set|\bsrc)(\s*\()", r"x-\1\2", t, flags=re.I)
+        t = t.replace("<", "\\3c ")
+        t = re.sub(r"@import[^;]*;?", "", t, flags=re.I)
         return re.sub(r"url\s*\((?!\s*[\"']?data:image/)[^)]*\)", "none", t, flags=re.I)
     for el in list(root.iter()):
         if not isinstance(el.tag, str):  # comments, processing instructions
@@ -307,6 +404,8 @@ def harmless_html(data: bytes, folder: str) -> bytes:
                 el.drop_tree()
             continue
         tag = el.tag.rsplit("}", 1)[-1].lower()
+        if tag in RAW_TAGS:  # their text would be written as it is
+            el.tag = tag = "pre"
         if tag in DROP_TAGS or (tag == "meta" and el.get("http-equiv")):
             if el.getparent() is not None:
                 el.drop_tree()
@@ -316,7 +415,7 @@ def harmless_html(data: bytes, folder: str) -> bytes:
                    if "stylesheet" in (el.get("rel") or "").lower() else None)
             if got:
                 style = lx.Element("style")
-                style.text = css(got[1].decode("utf-8", "replace")).replace("</", "<\\/")
+                style.text = css(got[1].decode("utf-8", "replace"))
                 el.addprevious(style)
             el.drop_tree()
             continue
@@ -330,7 +429,8 @@ def harmless_html(data: bytes, folder: str) -> bytes:
                 url = el.get(key).strip()
                 if not re.match(r"data:image/(png|jpe?g|gif|webp|bmp);", url, re.I):
                     got = _inline(url, folder, IMAGE_TYPES)
-                    if got:
+                    total += len(got[1]) if got else 0
+                    if got and total <= MAX_INLINE:
                         el.set(key, f"data:{IMAGE_TYPES[got[0]]};base64,"
                                + base64.b64encode(got[1]).decode())
                     else:
@@ -709,7 +809,7 @@ def to_xlsx(eng, out, pages):
     sheet.title = "ტექსტი"
     fill(sheet, [row for p in pages for row in _text_rows(eng, p)])
     book.save(out)
-    return 0 if done else "simple"
+    return "simple"
 
 
 def to_text(eng, out, pages):
@@ -721,7 +821,22 @@ def to_text(eng, out, pages):
 
 
 def to_html(eng, out, pages):
-    body = "\n<hr>\n".join(eng.doc.load_page(p).get_text("xhtml") for p in pages)
+    def page(p):
+        own = eng.doc.load_page(p).get_text("xhtml")
+        def plain(text):
+            text = unicodedata.normalize("NFKC", text.replace("\u00ad", "-"))
+            return sorted("".join(text.split()))
+        if plain(html.unescape(re.sub("<[^>]*>", "", own))) == plain(
+                "".join(c[4] for ln in eng.chars(p) for c in ln)):
+            return own
+        # Old Georgian fonts: chars() reads them, the library's own HTML does not.
+        rows = re.findall(r"<img[^>]*>", own)
+        for ln in eng.chars(p):
+            text = html.escape("".join(c[4] for c in ln).rstrip())
+            size = min(max(round(ln[0][3] - ln[0][1]) * .78, 6), 48)
+            rows.append(f'<p style="font-size:{size:.0f}pt">{text}</p>')
+        return "\n".join(rows)
+    body = "\n<hr>\n".join(page(p) for p in pages)
     title = html.escape((eng.doc.metadata or {}).get("title") or "")
     with open(out, "w", encoding="utf-8") as f:
         f.write(f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title></head>"

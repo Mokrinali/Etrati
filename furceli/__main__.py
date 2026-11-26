@@ -1,6 +1,24 @@
 import multiprocessing
 import os
 import sys
+import time
+
+
+def take_turn(paths, wait=6.0):
+    """(right to be the running program, were the files handed over instead).
+
+    Explorer starts one program per selected file, all at once: the others wait until the
+    first one's window can take their files.
+    """
+    from furceli import single
+    end = time.monotonic() + wait
+    while True:
+        lock = single.claim()
+        if lock is not None or time.monotonic() >= end:
+            return lock, False
+        time.sleep(.25)
+        if single.hand_over(paths):
+            return None, True
 
 
 def main() -> int:
@@ -18,6 +36,9 @@ def main() -> int:
     paths = [a for a in sys.argv[1:] if os.path.isfile(a)]
     if single.hand_over(paths):
         return 0  # the running window opens them as tabs
+    lock, given = take_turn(paths)
+    if given:
+        return 0
 
     from furceli.window import MainWindow
 
@@ -38,7 +59,10 @@ def main() -> int:
     win.show()
     for path in paths:
         win.open_file(path)
-    return app.exec()
+    code = app.exec()
+    if lock is not None:
+        lock.unlock()
+    return code
 
 
 if __name__ == "__main__":

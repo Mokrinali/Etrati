@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, Q
                                QVBoxLayout, QWidget)
 
 from . import files
-from .client import (P_OPEN, P_SEARCH, P_THUMB, EngineClient, TaskError, run_task,
+from .client import (P_OPEN, P_SEARCH, P_THUMB, EngineClient, TaskError, _blocking, run_task,
                      run_thread)
 from .dialogs import (PDF_FILTER, CropDialog, InsertDialog, SplitDialog, error_text, inspect_file,
                       warn_unprotected)
@@ -23,6 +23,7 @@ from .thumbs import RENDER_H, RENDER_W, ThumbList, Thumbs
 from .tools import CommentsPanel, ToolsMixin
 from .view import PageView, to_image
 
+MAX_LISTED = 2000  # search results shown in the list; all of them are highlighted
 CONTENT = ("tile", "chars", "links", "widgets", "thumb", "search", "comments")
 
 
@@ -164,17 +165,21 @@ class DocView(ToolsMixin, QWidget):
             self._edit_failed(kind, code)
         if kind in CONTENT and code in ("crash", "engine_dead"):
             self.status.emit(error_text(code))
+        elif code == "file_changed" and not self.broken:
+            self.broken = True  # what is shown and what is on the disk no longer agree
+            self.status.emit(error_text(code))
+            self.changed.emit()
 
     def close_document(self):
-        self.client.shutdown()
+        tmp, self._tmp = self._tmp, None
+        # The engine may still be busy: it ends on its own, and its working files go after it.
+        self.client.shutdown(wait=False, after=(
+            lambda: shutil.rmtree(tmp, ignore_errors=True)) if tmp else None)
         for f in self._holds:
             f.close()
         self._holds.clear()
         if getattr(self, "ai", None) is not None:
             self.ai.reset()
-        if self._tmp:
-            shutil.rmtree(self._tmp, ignore_errors=True)
-            self._tmp = None
 
     # -- layout ------------------------------------------------------------
     def _build_sidebar(self):
@@ -360,9 +365,13 @@ class DocView(ToolsMixin, QWidget):
             at = bisect.bisect_left(self._found, (pno, 0))
             self._found[at:at] = [(pno, i) for i in range(len(hits))]
             for i, (_, snippet) in enumerate(hits):
+                if at + i >= MAX_LISTED:
+                    break
                 it = QListWidgetItem(f"გვ. {pno + 1}:  {snippet}")
                 it.setData(Qt.ItemDataRole.UserRole, (pno, i))
                 self.results.insertItem(at + i, it)
+            while self.results.count() > MAX_LISTED:
+                self.results.takeItem(MAX_LISTED)
             if self.view.current_hit is None and self._jump:
                 self._select_hit((pno, 0))
             self.view.viewport().update()
@@ -370,7 +379,8 @@ class DocView(ToolsMixin, QWidget):
         if self._left > 0:
             self.found_label.setText(f"იძებნება… ნაპოვნია {n}")
         else:
-            self.found_label.setText(f"ნაპოვნია {n}" if n else
+            more = f" (სიაში პირველი {MAX_LISTED})" if n > MAX_LISTED else ""
+            self.found_label.setText(f"ნაპოვნია {n}{more}" if n else
                                      "ვერ მოიძებნა. თუ ფაილი დასკანერებულია, მასში ტექსტი არ არის.")
 
     def next_hit(self, delta):
@@ -378,13 +388,16 @@ class DocView(ToolsMixin, QWidget):
             return
         self.organize(False)
         cur = self.view.current_hit
-        i = self._found.index(cur) if cur in self._found else (-1 if delta > 0 else 0)
+        i = bisect.bisect_left(self._found, cur) if cur else -1
+        if not (cur and i < len(self._found) and self._found[i] == cur):
+            i = -1 if delta > 0 else 0
         self._select_hit(self._found[(i + delta) % len(self._found)])
 
     def _select_hit(self, hit):
         hit = tuple(hit)
         self.view.current_hit = hit
-        self.results.setCurrentRow(self._found.index(hit))
+        row = bisect.bisect_left(self._found, hit)
+        self.results.setCurrentRow(row if row < self.results.count() else -1)
         self.view.show_rect(hit[0], self.view.hits[hit[0]][hit[1]][0])
 
     # -- editing -----------------------------------------------------------
@@ -501,6 +514,8 @@ class DocView(ToolsMixin, QWidget):
 
     def _start(self, kind, op, *args):
         self._busy = True
+        # The engine's side notes the success itself, so a crash right after it loses nothing.
+        self.client.recover_with(self._base, self._base_password, self.ops)
         self.view.frozen = True
         self.client.cancel(lambda k: k[0] in CONTENT)
         self._seq += 1
@@ -540,9 +555,12 @@ class DocView(ToolsMixin, QWidget):
                 "არ დაზიანდეს. დისკზე ფაილი უცვლელია. დახურეთ ეს ჩანართი და თავიდან გახსენით; ძველი ვერსიები "
                 "სარეზერვო ასლების საქაღალდეშია.")
             return
+        self._after = ""
         QMessageBox.warning(self, "რედაქტირება", error_text(code))
         # whatever was half done is thrown away
         self._start("restore", "replay", self._base, self._base_password, self.ops)
+
+    _after = ""  # status text for when the running edit succeeds
 
     MOVES = ("rotate", "crop", "order", "insert", "blank", "duplicate")
 
@@ -558,14 +576,30 @@ class DocView(ToolsMixin, QWidget):
         self._bad_thumbs.clear()
         self._busy = False
         self.view.frozen = False
+        self.view.cancel_crop()  # the pages it was meant for may be others now
+        self._moving = None
         pos = self.grid.verticalScrollBar().value()
         last = self.ops[-1][0] if self.ops and kind in ("edit", "redo") else ""
+        odd = sum(n for what, n in info.get("notes") or () if what == "photos")
+        if odd and kind == "edit":
+            QMessageBox.information(
+                self, "ფარული მონაცემები", f"{odd} ფოტოს ფორმატი უჩვეულოა, ამიტომ კამერისა და ადგილის მონაცემები "
+                "მათში შეიძლება დარჩა.")
         turned = [p for what, p in info.get("notes") or () if what == "picture"]
         if turned and kind in ("edit", "redo"):
             QMessageBox.information(
                 self, "დაფარვა", f"გვერდ(ებ)ზე {files.describe(turned)} სიტყვის ცალკე ამოჭრა დანარჩენ ტექსტს დაძრავდა. "
                 "ამიტომ ეს გვერდები სურათად იქცა: დაფარული ტექსტი აღარ არსებობს, დანარჩენი კი ისევ "
                 "იძებნება და კოპირდება. ასეთ გვერდზე ტექსტის შეცვლა ვეღარ მოხერხდება.")
+        said = [x for what, x in info.get("notes") or () if what == "mentions"]
+        if said and kind == "edit":
+            QMessageBox.information(
+                self, "დაფარვა", "დაფარული ტექსტი კიდევ გვხვდება გვერდების გარეთ:\n\n• "
+                + "\n• ".join(said[0][:12]) + ("\n• …" if len(said[0]) > 12 else "")
+                + "\n\nმათ წასაშლელად გამოიყენეთ „ფარული მონაცემების წაშლა“.")
+        after, self._after = self._after, ""
+        if after and kind == "edit":  # told only now, when it has really happened
+            self.status.emit(after)
         if last == "redact":
             self.view.marks = {}
         self.view.reload(self.sizes, mapping, still=bool(last) and last not in self.MOVES)
@@ -610,7 +644,7 @@ class DocView(ToolsMixin, QWidget):
             QMessageBox.information(self, "წაშლა", "ყველა გვერდის წაშლა შეუძლებელია: ერთი მაინც უნდა დარჩეს.")
             return
         if self.edit(("order", order), [min(min(pages), len(order) - 1)]):
-            self.status.emit(f"წაიშალა გვერდი {files.describe(list(pages))}. დაბრუნება: Ctrl+Z")
+            self._after = f"წაიშალა გვერდი {files.describe(list(pages))}. დაბრუნება: Ctrl+Z"
 
     def move_pages(self, pages, at):
         chosen = set(pages)
@@ -716,6 +750,8 @@ class DocView(ToolsMixin, QWidget):
         if not self.info["can_copy"]:
             QMessageBox.information(self, "გვერდები", "ავტორმა ამ ფაილიდან ასლის აღება აკრძალა.")
             return False
+        if not self.marks_ok():
+            return False
         return not self.info["protected"] or warn_unprotected(self)
 
     def extract_pages(self):
@@ -773,18 +809,41 @@ class DocView(ToolsMixin, QWidget):
             return False
         finally:
             for _, t in tmps:
-                if os.path.exists(t):
-                    os.remove(t)
+                files.discard(t)
 
     # -- saving ------------------------------------------------------------
+    def marks_ok(self, question="ფაილში მათი შიგთავსი მთლიანად დარჩება. გავაგრძელო?") -> bool:
+        """Places marked for redaction look covered, but nothing has been removed yet."""
+        n = sum(len(m) for m in self.view.marks.values())
+        return not n or QMessageBox.question(
+            self, "დაფარვა", f"დასაფარად მონიშნულია {n} ადგილი, მაგრამ ჯერ არაფერი წაშლილა. "
+            + question) == QMessageBox.StandardButton.Yes
+
+    def wait_idle(self):
+        """Wait until the running edit, and those queued behind it, are done."""
+        if not (self._busy or getattr(self, "_queue", [])):
+            return
+        timer = QTimer(self)
+        timer.setInterval(30)
+
+        def start(loop):
+            timer.timeout.connect(lambda: loop.quit() if not (
+                self._busy or getattr(self, "_queue", [])) else None)
+            timer.start()
+        try:
+            _blocking(start, "ცვლილება სრულდება…", self)
+        finally:
+            timer.stop()
+            timer.deleteLater()
+
     def save(self) -> bool:
+        if self._busy or self._saving:  # first: a running edit is not in the list yet
+            self.status.emit("მოიცადეთ, ცვლილება ჯერ სრულდება.")
+            return False
         if not self.dirty:
             return True
         if self.broken:
             return self._refuse_broken()
-        if self._busy or self._saving:
-            self.status.emit("მოიცადეთ, ცვლილება ჯერ სრულდება.")
-            return False
         if not self._overwrite_ok:
             box = QMessageBox(QMessageBox.Icon.Question, "შენახვა",
                               f"გადავაწერო „{os.path.basename(self.path)}“-ს?\n\n"
@@ -815,7 +874,15 @@ class DocView(ToolsMixin, QWidget):
             return False
         if not out.lower().endswith(".pdf"):
             out = files.unique_path(out + ".pdf")
-        return self._write_to(os.path.abspath(out))
+        out = os.path.abspath(out)
+        if self.is_open_elsewhere(out):
+            QMessageBox.warning(self, "შენახვა", "ეს ფაილი სხვა ჩანართში ღიაა. აირჩიეთ სხვა სახელი.")
+            return False
+        return self._write_to(out)
+
+    def is_open_elsewhere(self, path) -> bool:
+        """The window replaces this: is the file open in another tab?"""
+        return False
 
     def _write_to(self, target) -> bool:
         if self._saving:
@@ -858,6 +925,8 @@ class DocView(ToolsMixin, QWidget):
                 self, "შენახვა", "ამ ფაილს ციფრული ხელმოწერის ველი აქვს. შენახვის შემდეგ არსებული "
                 "ხელმოწერა ძალას დაკარგავს. გავაგრძელო?") != QMessageBox.StandardButton.Yes:
             return False
+        if not self.marks_ok():
+            return False
         ops = list(self.ops)
         tmp = ""
         try:
@@ -874,11 +943,17 @@ class DocView(ToolsMixin, QWidget):
                 + "\n\nცვლილებები არ დაკარგულა, სცადეთ „შენახვა როგორც“.")
             return False
         finally:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        st = os.stat(target)
-        self.info["bytes"] = st.st_size
-        self.info["stamp"] = (st.st_mtime_ns, st.st_size)
+            if tmp:
+                files.discard(tmp)
+        try:
+            st = os.stat(target)
+            self.info["bytes"] = st.st_size
+            self.info["stamp"] = (st.st_mtime_ns, st.st_size)
+        except OSError:  # saved, but somebody holds it just now: the next save will ask
+            pass
+        else:
+            if same and not self._base:  # the engine still knows the file by its path
+                self.client.accept_stamp(self.info["stamp"])
         self.path = target
         fresh = [op for op in ops if op not in self._saved_ops]  # not in any backup's successor yet
         self._saved_ops = ops
@@ -906,8 +981,12 @@ class DocView(ToolsMixin, QWidget):
     def _open_uri(self, uri):
         url = QUrl(uri)
         if url.scheme().lower() not in ("http", "https", "mailto"):
-            QMessageBox.warning(self, "ბმული", f"ამ ტიპის ბმული უსაფრთხოებისთვის დაბლოკილია:\n{uri}")
+            QMessageBox.warning(self, "ბმული", "ამ ტიპის ბმული უსაფრთხოებისთვის დაბლოკილია:\n"
+                                + uri[:300])
             return
-        if QMessageBox.question(self, "ბმულის გახსნა", f"გავხსნა ეს ბმული?\n\n{uri}"
-                                ) == QMessageBox.StandardButton.Yes:
+        shown = uri if len(uri) <= 300 else uri[:300] + "…"
+        shown = "".join(c if c.isprintable() else " " for c in shown)
+        host = url.host() or url.path()[:100]
+        if QMessageBox.question(self, "ბმულის გახსნა", "გავხსნა ეს ბმული?\n\n"
+                                f"მისამართი: {host}\n\n{shown}") == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(url)

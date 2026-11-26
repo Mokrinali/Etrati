@@ -1,6 +1,7 @@
 """Main window: tabs, menus, toolbar, recent files."""
 from __future__ import annotations
 
+import math
 import os
 
 from PySide6.QtCore import QSettings, QSize, Qt, QUrl
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QFileDialog, QFormLayout
 from . import APP_NAME, DATA_ID, __version__, files
 from .ai import AiPanel
 from .batch import BatchDialog
-from .client import EngineClient, TaskError, run_task
+from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
 from .scan_dialog import ScanDialog
@@ -331,8 +332,8 @@ class MainWindow(QMainWindow):
             return
         finally:
             client.shutdown()
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            client.deleteLater()
+            files.discard(tmp)
         self.open_file(out)
 
     def _toolbar(self):
@@ -540,14 +541,21 @@ class MainWindow(QMainWindow):
             if os.path.normcase(self.tabs.widget(i).path) == os.path.normcase(path):
                 self.tabs.setCurrentIndex(i)
                 return
+        try:
+            start = int(self._positions().get(os.path.normcase(path), 0))
+        except (TypeError, ValueError):  # a damaged settings file
+            start = 0
         doc = DocView(path)
-        doc.start_page = int(self._positions().get(os.path.normcase(path), 0))
+        doc.start_page = start
+        doc.is_open_elsewhere = lambda p: any(
+            d is not doc and os.path.normcase(d.path) == os.path.normcase(p) for d in self._docs())
         doc.ready.connect(lambda: self._ready(doc))
         doc.closed.connect(lambda msg: self._open_failed(doc, msg))
         doc.status.connect(lambda m: self.statusBar().showMessage(m, 8000))
         doc.view.pageChanged.connect(lambda *_: self._sync())
         doc.view.zoomChanged.connect(lambda *_: self._sync())
-        doc.view.hovered.connect(self.link_label.setText)
+        doc.view.hovered.connect(lambda t: self.link_label.setText(
+            t if len(t) <= 120 else t[:120] + "…"))
         doc.changed.connect(self._sync)
         doc.pageMenu.connect(self._page_menu)
         doc.openRequested.connect(self.open_file)
@@ -574,7 +582,10 @@ class MainWindow(QMainWindow):
 
     def _may_close(self, doc) -> bool:
         if not doc.dirty and not doc._busy:
-            return True
+            if not doc.view.marks:
+                return True
+            self.tabs.setCurrentWidget(doc)
+            return doc.marks_ok("დახურვისას მონიშვნები დაიკარგება. დავხურო?")
         self.tabs.setCurrentWidget(doc)
         box = QMessageBox(QMessageBox.Icon.Question, "შეუნახავი ცვლილებები",
                           f"„{os.path.basename(doc.path)}“-ში შეუნახავი ცვლილებებია. შევინახო?",
@@ -585,6 +596,7 @@ class MainWindow(QMainWindow):
         box.setDefaultButton(yes)
         box.exec()
         if box.clickedButton() is yes:
+            doc.wait_idle()  # a running edit belongs to what is saved
             return doc.save()
         return box.clickedButton() is no
 
@@ -706,7 +718,8 @@ class MainWindow(QMainWindow):
             return
         try:
             z = float(self.zoom_box.currentText().replace("%", "").replace(",", ".").strip())
-            self.doc.view.set_zoom(z / 100)
+            if math.isfinite(z):
+                self.doc.view.set_zoom(z / 100)
         except ValueError:
             pass
         self._sync()
@@ -738,6 +751,8 @@ class MainWindow(QMainWindow):
             self.showNormal()
 
     def print_doc(self):
+        if not self.doc.marks_ok("დაბეჭდილზე მათი შიგთავსი გამოჩნდება. გავაგრძელო?"):
+            return
         try:
             if choose_and_print(self.doc, self):
                 self.statusBar().showMessage("გაიგზავნა დასაბეჭდად", 6000)
@@ -820,4 +835,5 @@ class MainWindow(QMainWindow):
         while self.tabs.count():
             self.close_tab(0, ask=False)
         self.settings.sync()
+        finish_all()  # no engine, Office or Edge may outlive the program
         e.accept()

@@ -300,6 +300,7 @@ def test_f7_signature_picture_lives_in_the_session(win, doc, monkeypatch):  # no
     folder = doc._tmp
     assert doc.pending_image.startswith(folder)
     win.close_tab(0, ask=False)
+    __import__("furceli.client").client.finish_all()  # the folder goes after the engine
     assert not os.path.exists(folder)
 
 

@@ -14,12 +14,16 @@ import html
 import io
 import math
 import os
+import re
+import zlib
 
 import pymupdf
 from pymupdf import Matrix, Point, Quad, Rect
 
-from . import legacy
+from . import layers, legacy
 from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char
+
+PUNCT = ".,;:!?\"'()[]{}«»„“”‘’—–-…/\\"
 
 FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
 TESSDATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -147,6 +151,12 @@ def _ocr_words(raw) -> list:
                                   cur[4] + c["c"]]
                     size = max(y1 - y0, 1.0)
     return [tuple(w) for w in out if w[4].strip() and w[2] - w[0] > 0.5]
+
+
+def _pdf_name(text: str) -> str:
+    """A name as it is spelled in a file."""
+    return "".join(c if c.isascii() and (c.isalnum() or c in "-_.+") else
+                   "".join(f"#{b:02X}" for b in c.encode("utf-8")) for c in text)
 
 
 class Features(EditEngine):
@@ -300,17 +310,72 @@ class Features(EditEngine):
                 value = value not in (None, False, "", "Off")
                 if kind == "radio":
                     value = w.field_value == w.on_state()
+                elif len(self._kids(w.xref)) > 1:  # several boxes of one field
+                    value = self.doc.xref_get_key(w.xref, "AS")[1] not in ("null", "/Off")
+            pairs = [c if isinstance(c, (list, tuple)) else (c, c) for c in w.choice_values or []]
+            multi = kind == "list" and bool(flags & pymupdf.PDF_CH_FIELD_IS_MULTI_SELECT)
+            if multi:
+                value = self._chosen(w.xref)
             out.append({
                 "index": i, "name": w.field_name or "", "kind": kind, "value": value,
                 "rect": tuple(w.rect * page.rotation_matrix),
-                "choices": [c[1] if isinstance(c, (list, tuple)) else c
-                            for c in (w.choice_values or [])],
+                "choices": [c[1] for c in pairs], "exports": [c[0] for c in pairs],
+                "editable": kind == "combo" and bool(flags & pymupdf.PDF_CH_FIELD_IS_EDIT),
+                "signed": kind == "sign" and self._has_value(w.xref),
+                "multi": multi,
                 "multiline": bool(flags & pymupdf.PDF_TX_FIELD_IS_MULTILINE),
                 "password": bool(flags & pymupdf.PDF_TX_FIELD_IS_PASSWORD),
                 "max": w.text_maxlen or 0,
                 "readonly": bool(flags & pymupdf.PDF_FIELD_IS_READ_ONLY),
                 "label": w.field_label or ""})
         return out
+
+    def _has_value(self, xref):
+        for x in (xref, self._parent(xref)):
+            if x and self.doc.xref_get_key(x, "V")[0] != "null":
+                return True
+        return False
+
+    def _chosen(self, xref):
+        """The export values chosen in a list: one or several, kept by the field or the widget."""
+        mu = pymupdf.mupdf
+        pdf = mu.pdf_document_from_fz_document(self.doc)
+        v = mu.pdf_dict_get_inheritable(mu.pdf_load_object(pdf, xref), mu.pdf_new_name("V"))
+        items = [mu.pdf_array_get(v, i) for i in range(mu.pdf_array_len(v))]             if mu.pdf_is_array(v) else [v] if mu.pdf_is_string(v) else []
+        return [mu.pdf_to_text_string(i) for i in items if mu.pdf_is_string(i)]
+
+    def _parent(self, xref):
+        kind, value = self.doc.xref_get_key(xref, "Parent")
+        return int(value.split()[0]) if kind == "xref" else 0
+
+    def _kids(self, xref):
+        """All widgets of the field a widget belongs to (none when it is the field itself)."""
+        parent = self._parent(xref)
+        if not parent or self.doc.xref_get_key(xref, "T")[0] != "null":
+            return []
+        kind, value = self.doc.xref_get_key(parent, "Kids")
+        if kind == "xref":
+            value = self.doc.xref_object(int(value.split()[0]), compressed=True)
+        return [int(r) for r in re.findall(r"(\d+) \d+ R", value)]
+
+    def _states(self, xref):
+        """Names of the pictures a box has besides "Off", as written in the file."""
+        kind, value = self.doc.xref_get_key(xref, "AP/N")
+        if kind == "xref":
+            return self.doc.xref_get_keys(int(value.split()[0]))
+        o = pymupdf.mupdf.pdf_load_object(
+            pymupdf.mupdf.pdf_document_from_fz_document(self.doc), xref)
+        n = pymupdf.mupdf.pdf_dict_getp(o, "AP/N")
+        return [pymupdf.mupdf.pdf_to_name(pymupdf.mupdf.pdf_dict_get_key(n, i))
+                for i in range(pymupdf.mupdf.pdf_dict_len(n))]
+
+    def _set_box(self, xref, on):
+        """One of several check boxes that make up a field: the others follow."""
+        name = next((s for s in self._states(xref) if s != "Off"), "Yes") if on else "Off"
+        for k in self._kids(xref):
+            here = name if on and name in self._states(k) else "Off"
+            self.doc.xref_set_key(k, "AS", "/" + _pdf_name(here))
+        self.doc.xref_set_key(self._parent(xref), "V", "/" + _pdf_name(name))
 
     def _widget(self, page, index):
         items = list(page.widgets())
@@ -368,12 +433,48 @@ class Features(EditEngine):
                         break
                     size -= .5
             w.field_value = value
+        elif (w.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+                and len(self._kids(w.xref)) > 1):
+            self._set_box(w.xref, bool(value))
+            return [-1] * self.doc.page_count
         elif w.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX:
             w.field_value = bool(value)
         elif w.field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON:
             w.field_value = bool(value)
+        elif w.field_type == pymupdf.PDF_WIDGET_TYPE_LISTBOX and isinstance(value, (list, tuple)):
+            if not flags & pymupdf.PDF_CH_FIELD_IS_MULTI_SELECT:
+                raise EngineError("bad_op")
+            pairs = [c if isinstance(c, (list, tuple)) else (c, c) for c in w.choice_values or ()]
+            chosen = [i for i, c in enumerate(pairs) if c[0] in value]
+            # The look first (MuPDF draws the list of choices), then the values themselves:
+            # PyMuPDF writes only one.
+            w.field_value = pairs[chosen[0]][1] if chosen else (pairs[0][1] if pairs else "")
+            xref = w.xref
+            w.update()
+            page = w = None
+            parent = self._parent(xref)
+            holder = parent if self.doc.xref_get_key(xref, "T")[0] == "null" and parent else xref
+            for x in {xref, holder} - {holder}:
+                self.doc.xref_set_key(x, "V", "null")
+                self.doc.xref_set_key(x, "I", "null")
+            self.doc.xref_set_key(holder, "V", "[%s]" % "".join(
+                pymupdf.get_pdf_str(pairs[i][0]) for i in chosen))
+            self.doc.xref_set_key(holder, "I", "[%s]" % " ".join(map(str, chosen)))
+            return [-1] * self.doc.page_count
         elif w.field_type in (pymupdf.PDF_WIDGET_TYPE_COMBOBOX, pymupdf.PDF_WIDGET_TYPE_LISTBOX):
-            w.field_value = value
+            # the box shows the display text, the file keeps the export value
+            shown = next((c[1] for c in w.choice_values or ()
+                          if isinstance(c, (list, tuple)) and c[0] == value), value)
+            w.field_value = shown
+            if shown != value:
+                xref = w.xref
+                w.update()
+                parent = self._parent(xref)
+                holder = parent if self.doc.xref_get_key(xref, "T")[0] == "null" and parent else xref
+                for x in {xref, holder}:
+                    if x == holder or self.doc.xref_get_key(x, "V")[0] != "null":
+                        self.doc.xref_set_key(x, "V", pymupdf.get_pdf_str(value))
+                return [-1] * self.doc.page_count
         else:
             raise EngineError("read_only")
         w.update()
@@ -511,6 +612,13 @@ class Features(EditEngine):
 
         The full boxes would touch neighbouring lines; too thin strips miss odd glyphs.
         """
+        src = self._snapshot()
+        try:
+            return self._try_strips(src, pno, chars, turn, own)
+        finally:
+            src.close()
+
+    def _try_strips(self, src, pno, chars, turn, own):
         for along, across in ((.3, .08), (.15, .15), (.3, .25), (.05, .3), (.45, .02)):
             strips = []
             for c in chars:
@@ -527,9 +635,7 @@ class Features(EditEngine):
                     if b - a < .05:
                         a, b = (a + b) / 2 - .05, (a + b) / 2 + .05
                     strips.append(Rect(mid - half, a, mid + half, b))
-            trial = pymupdf.open()
-            src = self._snapshot()
-            trial.insert_pdf(src, from_page=pno, to_page=pno, links=0, annots=1, widgets=1)
+            trial = self._page_alone(src, pno, annots=1, widgets=1)
             try:
                 base = self._glyphs(trial.load_page(0))
                 after = self._glyphs(self._remove_strips(trial, 0, strips))
@@ -537,7 +643,6 @@ class Features(EditEngine):
                     return strips
             finally:
                 trial.close()
-                src.close()
         return None
 
     def _op_text(self, pno, rect, text, style):
@@ -649,32 +754,51 @@ class Features(EditEngine):
 
     @staticmethod
     def _wipe(page, boxes, fill):
+        # Applying takes every mark on the page: those of other programs are hidden meanwhile.
+        doc, pno = page.parent, page.number
+        foreign = [a.xref for a in page.annots(types=[pymupdf.PDF_ANNOT_REDACT])]
+        if foreign:
+            for x in foreign:
+                doc.xref_set_key(x, "Subtype", "/Square")
+            page = None
+            page = doc.load_page(pno)
         for r, color in boxes:
             page.add_redact_annot(r, fill=color, cross_out=False)
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                               text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+        for x in foreign:
+            doc.xref_set_key(x, "Subtype", "/Redact")
 
-    def _wipe_plan(self, pno, areas, fill):
-        """Boxes that really remove the text and move nothing else, tried on a copy; or None."""
+    def _wipe_plan(self, src, pno, areas, fill):
+        """Boxes that really remove the text and move nothing else, tried on a copy; or None.
+
+        src is a list holding the snapshot: renewed when this page has changed since it was
+        taken, as one that shares something with a page redacted before may have.
+        """
         before = self._glyphs(self.doc.load_page(pno))
+        trial = self._page_alone(src[0], pno)
+        try:
+            stale = self._glyphs(trial.load_page(0)) != before
+        finally:
+            trial.close()
+        if stale:
+            src[0].close()
+            src[0] = self._snapshot()
         doomed = [r for _, r in before if self._inside(r, areas)]
         main = [(a, fill) for a in areas]
         wide = [(r + (-.2, 0, .2, 0), False) for r in doomed]
         narrow = [(Rect(r.x0 + r.width * .2, r.y0 + r.height * .3,
                         r.x1 - r.width * .2, r.y1 - r.height * .3), False) for r in doomed]
         for plan in (main, main + [b for b in narrow if not b[0].is_empty], main + wide):
-            src = self._snapshot()
-            trial = pymupdf.open()
+            # comments and fields are handled on their own and not part of the text
+            trial = self._page_alone(src[0], pno, annots=0, widgets=0)
             try:
-                trial.insert_pdf(src, from_page=pno, to_page=pno, links=0, annots=0, widgets=0)
-                # comments and fields are handled on their own and not part of the text
                 base = self._glyphs(trial.load_page(0))
                 self._wipe(trial.load_page(0), plan, fill)
                 after = self._glyphs(trial.load_page(0))
             finally:
                 trial.close()
-                src.close()
             gone = len([1 for _, r in base if self._inside(r, areas)])
             if any(self._inside(r, areas) for _, r in after) or self._moved(base, after):
                 continue
@@ -727,20 +851,41 @@ class Features(EditEngine):
         self._notes.append(("picture", pno))
 
     def _op_redact(self, marks, o):
+        # One snapshot for all tries: the pages change one by one, but each is tried before
+        # it changes, and comments and fields, which do go, are not part of the tries.
+        src = [self._snapshot()]
+        try:
+            self._redact_pages(src, marks, o)
+        finally:
+            src[0].close()
+        self._drop_tags()  # whole: an element without a page may quote the redacted text
+        cat = self.doc.pdf_catalog()
+        if self.doc.xref_get_key(cat, "PieceInfo")[0] != "null":
+            self.doc.xref_set_key(cat, "PieceInfo", "null")
+        self._dropped = True
+        return self._same(*marks)
+
+    def _redact_pages(self, src, marks, o):
+        words = {o["word"]} if len(o.get("word") or "") >= 2 else set()
         for pno, rects in marks.items():
             page = self.doc.load_page(pno)
             m = page.derotation_matrix
             areas = [(Rect(r) * m).normalize() for r in rects]
+            for w in page.get_text("words"):
+                bare = w[4].strip(PUNCT)
+                if len(bare) >= 3 and self._inside(Rect(w[:4]), areas):
+                    words.add(bare)
 
             def hit(r):
                 return any(not (Rect(r) & a).is_empty for a in areas)
             self._delete_under(page, hit)
             page = None
-            plan = self._wipe_plan(pno, areas, o["fill"])
+            plan = self._wipe_plan(src, pno, areas, o["fill"])
             if plan is None:
                 self._as_picture(pno, areas, o["fill"])
             else:
                 self._wipe(self.doc.load_page(pno), plan, o["fill"])
+            page = None
             page = self.doc.load_page(pno)
             shown = [r for c, r in self._glyphs(page)]
             fields = [w.rect for w in page.widgets()]
@@ -750,12 +895,9 @@ class Features(EditEngine):
             # private copies of the page that editors and viewers keep
             for key in ("Thumb", "PieceInfo"):
                 self.doc.xref_set_key(page.xref, key, "null")
-        self._drop_tags()  # whole: an element without a page may quote the redacted text
-        cat = self.doc.pdf_catalog()
-        if self.doc.xref_get_key(cat, "PieceInfo")[0] != "null":
-            self.doc.xref_set_key(cat, "PieceInfo", "null")
-        self._dropped = True
-        return self._same(*marks)
+        said = self._mentions_of(sorted(words)[:300])
+        if said:
+            self._notes.append(("mentions", said))
 
     def _delete_under(self, page, hit):
         for a in list(page.annots()):
@@ -766,27 +908,41 @@ class Features(EditEngine):
                 self._gone_fields.add(w.xref)
                 page.delete_widget(w)
 
-    def mentions(self, text):
-        """Where else a word appears: places redaction of pages does not reach."""
-        low = text.lower()
-        out = []
-        for k, v in (self.doc.metadata or {}).items():
-            if v and low in str(v).lower():
-                out.append("თვისებები: " + k)
-        xml = self.doc.get_xml_metadata() or ""
-        if low in xml.lower():
-            out.append("XMP მეტამონაცემები")
-        out += ["სანიშნე: " + t[1] for t in self.doc.get_toc() if low in t[1].lower()]
-        for pno, a in self.all_annots():
-            if low in a["text"].lower():
-                out.append(f"კომენტარი, გვ. {pno + 1}")
+    def _places(self):
+        """(where, text) of everything outside the pages' content, read once."""
+        out = [("თვისებები: " + k, str(v)) for k, v in (self.doc.metadata or {}).items() if v]
+        out.append(("XMP მეტამონაცემები", self.doc.get_xml_metadata() or ""))
+        out += [("სანიშნე: " + t[1], t[1]) for t in self.doc.get_toc()]
+        out += [(f"კომენტარი, გვ. {pno + 1}", a["text"]) for pno, a in self.all_annots()]
         for pno in range(self.doc.page_count):
-            for w in self.doc.load_page(pno).widgets():
-                if low in str(w.field_value or "").lower():
-                    out.append(f"ფორმის ველი, გვ. {pno + 1}")
+            out += [(f"ფორმის ველი, გვ. {pno + 1}", str(w.field_value or ""))
+                    for w in self.doc.load_page(pno).widgets()]
+        return [(where, text.lower()) for where, text in out]
+
+    def _unchecked(self):
+        out = []
+        if self.doc.xref_get_key(self.doc.pdf_catalog(), "AcroForm/XFA")[0] != "null":
+            out.append("XFA ფორმის მონაცემები (შიგთავსი არ შემოწმდა)")
         if self.doc.embfile_count():
             out.append("მიმაგრებული ფაილები (შიგთავსი არ შემოწმდა)")
         return out
+
+    def mentions(self, text):
+        """Where else a word appears: places redaction of pages does not reach."""
+        low = text.lower()
+        return [where for where, t in self._places() if low in t] + self._unchecked()
+
+    def _mentions_of(self, words):
+        """Lines telling where else the removed words appear; [] when nowhere."""
+        if not words:
+            return []
+        places, out = self._places(), []
+        for word in words:
+            low = word.lower()
+            where = list(dict.fromkeys(w for w, t in places if low in t))
+            if where:
+                out.append(f"„{word}“: " + ", ".join(where[:6]) + (" …" if len(where) > 6 else ""))
+        return out + self._unchecked()  # what was not looked into is said every time
 
     def _op_scrub(self, o):
         # Document.scrub() stops at the first damaged cross-reference, which real files have.
@@ -794,6 +950,11 @@ class Features(EditEngine):
         if o.get("hidden"):
             from pymupdf import utils  # noqa: F401 - the one part worth keeping
             look = [doc.load_page(p).get_pixmap(dpi=50).samples for p in range(doc.page_count)]
+            if doc.xref_get_key(doc.pdf_catalog(), "OCProperties")[0] != "null":
+                if layers.remove_hidden(doc, self._gone_fields):
+                    self._drop_tags()  # they may quote what was hidden
+                self._reload()         # MuPDF remembers which layers were hidden
+                doc = self.doc
             doc.scrub(attached_files=False, embedded_files=False, javascript=False,
                       metadata=False, xml_metadata=False, hidden_text=True, thumbnails=False,
                       clean_pages=False, redactions=False, remove_links=False,
@@ -815,11 +976,17 @@ class Features(EditEngine):
             if doc.xref_get_key(x, "Thumb")[0] != "null":
                 doc.xref_set_key(x, "Thumb", "null")
         if o.get("metadata", True):
-            cat = self.doc.pdf_catalog()
-            for x in [cat] + [self.doc.page_xref(i) for i in range(self.doc.page_count)]:
-                for key in ("PieceInfo", "Metadata"):
-                    if self.doc.xref_get_key(x, key)[0] != "null":
-                        self.doc.xref_set_key(x, key, "null")
+            odd = 0
+            for x in range(1, self.doc.xref_length()):  # pictures and fonts carry it too
+                try:
+                    for key in ("PieceInfo", "Metadata"):
+                        if self.doc.xref_get_key(x, key)[0] != "null":
+                            self.doc.xref_set_key(x, key, "null")
+                    odd += self._bare_jpeg(x) is False
+                except Exception:  # a damaged slot
+                    continue
+            if odd:
+                self._notes.append(("photos", odd))
         if o.get("javascript", True):
             self._strip_javascript()
             if self._strip_javascript():  # a second pass must find nothing
@@ -828,7 +995,8 @@ class Features(EditEngine):
             for pno in range(self.doc.page_count):
                 page = self.doc.load_page(pno)
                 for x in [a.xref for a in page.annots()]:
-                    self.doc.xref_set_key(x, "T", "null")
+                    for key in ("T", "M", "CreationDate"):
+                        self.doc.xref_set_key(x, key, "null")
         if o.get("comments"):
             for pno in range(self.doc.page_count):
                 page = self.doc.load_page(pno)
@@ -836,6 +1004,44 @@ class Features(EditEngine):
                     page.delete_annot(a)
         self._dropped = True
         return [-1] * self.doc.page_count
+
+    def _bare_jpeg(self, x):
+        """Take camera, place and editing notes out of a photo; its pixels stay as they are.
+
+        False when it is a photo that cannot be read that way.
+        """
+        doc = self.doc
+        filters = re.findall(r"/(\w+)", doc.xref_get_key(x, "Filter")[1])
+        if doc.xref_get_key(x, "Subtype")[1] != "/Image" or "DCTDecode" not in filters:
+            return None
+        old = doc.xref_stream_raw(x)
+        if filters == ["FlateDecode", "DCTDecode"] and doc.xref_get_key(x, "DecodeParms")[0] == "null":
+            try:
+                old = zlib.decompress(old)
+            except zlib.error:
+                return False
+        elif filters != ["DCTDecode"]:
+            return False
+        new = layers.bare_jpeg(old)
+        if new is None:
+            return False
+        if new == old:
+            return True
+        parms = doc.xref_get_key(x, "DecodeParms")
+        doc.update_stream(x, new, compress=False)
+        doc.xref_set_key(x, "Filter", "/DCTDecode")
+        if parms[0] != "null":
+            doc.xref_set_key(x, "DecodeParms", parms[1])
+        return True
+
+    def _reload(self):
+        """The same document, read anew; object numbers stay as they are."""
+        data = self.doc.tobytes(garbage=0, encryption=pymupdf.PDF_ENCRYPT_KEEP)
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        if doc.needs_pass:
+            doc.authenticate(self._password)
+        self.doc.close()
+        self.doc = doc
 
     def _drop_files(self):
         """Attached files: in the name tree, as page attachments, and as associated files."""
@@ -872,11 +1078,24 @@ class Features(EditEngine):
         pdf = mu.pdf_document_from_fz_document(self.doc)
         found = 0
 
+        def code(val):
+            """A script's text; fonts and pictures may bear the same name by chance."""
+            return bool(val.m_internal) and (mu.pdf_is_string(val) or (
+                mu.pdf_is_stream(val) and not mu.pdf_dict_gets(val, "Subtype").m_internal))
+
+        def named(key, val):
+            if key == "JS":
+                return code(val)
+            if key == "XFA":
+                return mu.pdf_is_array(val) or code(val)
+            return key == "JavaScript" and not (  # the list of scripts by name
+                mu.pdf_dict_gets(val, "Type").m_internal or mu.pdf_dict_gets(val, "Subtype").m_internal)
+
         def runs(o):
             if not mu.pdf_is_dict(o):
                 return False
             kind = mu.pdf_to_name(mu.pdf_dict_gets(o, "S"))
-            if kind in ("JavaScript", "Launch") or mu.pdf_dict_gets(o, "JS").m_internal:
+            if kind in ("JavaScript", "Launch") or code(mu.pdf_dict_gets(o, "JS")):
                 return True
             if kind == "URI":
                 uri = mu.pdf_to_text_string(mu.pdf_dict_gets(o, "URI")) or ""
@@ -893,7 +1112,7 @@ class Features(EditEngine):
                     for i in range(mu.pdf_dict_len(o)):
                         key = mu.pdf_to_name(mu.pdf_dict_get_key(o, i))
                         val = mu.pdf_dict_get_val(o, i)
-                        if key in ("JavaScript", "JS", "XFA") or runs(val):
+                        if named(key, val) or runs(val):
                             drop.append(key)
                         elif not mu.pdf_is_indirect(val):
                             todo.append(val)
@@ -926,7 +1145,12 @@ class Features(EditEngine):
     # -- security and size -------------------------------------------------
     def _op_protect(self, o):
         if self._protected:
-            level = self.doc.authenticate(o.get("auth", ""))
+            asked = pymupdf.open(stream=self.doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_KEEP),
+                                 filetype="pdf")
+            try:
+                level = asked.authenticate(o.get("auth", ""))
+            finally:
+                asked.close()
             if not level & 4:
                 raise EngineError("owner_needed")
         if o["mode"] == "set" and not (o.get("user") or o.get("owner")):

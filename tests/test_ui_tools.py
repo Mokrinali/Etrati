@@ -589,11 +589,14 @@ def test_dialogs_build_and_validate(app, monkeypatch):  # noqa: F811
     p._check()
     assert len(told) == 3 and p.result() != QDialog.DialogCode.Accepted
     p._owner.setText("o")
+    p._check()  # not repeated: a slip could never be undone
+    assert len(told) == 4 and p.result() != QDialog.DialogCode.Accepted
+    p._owner2.setText("o")
     p._check()
     assert p.result() == QDialog.DialogCode.Accepted
     f = forms.FieldDialog()
     f._check()
-    assert len(told) == 4
+    assert len(told) == 5
     forms.ScrubDialog(), forms.CompressDialog(10), forms.OcrDialog(3, 0), forms.TextDialog()
 
 

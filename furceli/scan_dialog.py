@@ -36,6 +36,16 @@ def convex(pts) -> bool:
     return True
 
 
+def _same(a, b) -> bool:
+    """Do two names mean one file, however they are spelled?"""
+    if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 class CornerView(QWidget):
     """The original picture with the sheet's corners to drag."""
 
@@ -265,7 +275,9 @@ class ScanDialog(QDialog):
                 self._ids += 1
                 page = {"id": self._ids, "path": path, "index": i, "password": password,
                         "o": {"corners": None, "turn": 0, "deskew": True}, "found": False,
-                        "before": None, "after": None, "error": ""}
+                        "before": None, "after": None, "error": "", "note": "",
+                        "seen": "",       # the settings the preview shows
+                        "again": False}   # only the corners are being looked for
                 self.pages.append(page)
                 name = os.path.basename(path) + (f"  ({i + 1})" if n > 1 else "")
                 self.list.addItem(QListWidgetItem(name))
@@ -297,9 +309,10 @@ class ScanDialog(QDialog):
         return next((p for p in self.pages if p["id"] == i), None)
 
     def _sync(self):
-        on = self.current is not None
+        on = self.current is not None and self.current["found"]
         for w in (self.auto, self.full, self.left, self.right, self.deskew):
             w.setEnabled(on)
+        self.before.setEnabled(on)
         self.go.setEnabled(bool(self.pages) and all(p["found"] for p in self.pages))
         waiting = sum(not p["found"] for p in self.pages)
         self.go.setText(f"მუშავდება… ({waiting})" if waiting else "PDF-ის შექმნა…")
@@ -310,8 +323,10 @@ class ScanDialog(QDialog):
         if page is None:
             return
         if key[0] == "find":
-            page["o"].update(corners=value["corners"], turn=value["turn"])
-            page["found"], page["error"] = True, ""
+            page["o"]["corners"] = value["corners"]
+            if not page["again"]:  # a turn the user has set stays
+                page["o"]["turn"] = value["turn"]
+            page["found"], page["error"], page["again"] = True, "", False
             if page is self.current:
                 self._show()
             else:
@@ -319,6 +334,7 @@ class ScanDialog(QDialog):
             self._sync()
         elif key[2] == self._stamp(page):
             page["before"], page["after"] = (to_image(v) for v in value)
+            page["seen"], page["note"] = key[2], ""
             row = self.pages.index(page)
             self.list.item(row).setIcon(QIcon(QPixmap.fromImage(page["after"])))
             if page is self.current:
@@ -328,7 +344,13 @@ class ScanDialog(QDialog):
         page = self._by_id(key[1]) if key[0] in ("find", "look") else None
         if page is None:
             return
-        page["found"], page["error"] = True, error_text(code)
+        if key[0] == "look":  # one preview: other settings, or another try, may well work
+            if key[2] == self._stamp(page) and code != "cancelled":
+                page["note"] = error_text(code)
+        elif page["again"]:
+            page["found"], page["again"], page["note"] = True, False, error_text(code)
+        else:
+            page["found"], page["error"] = True, error_text(code)
         if page is self.current:
             self._paint(page)
         self._sync()
@@ -358,8 +380,8 @@ class ScanDialog(QDialog):
 
     def _paint(self, page):
         self.before.set(page["before"], page["o"]["corners"])
-        self.after.set(page["after"] if not page["error"] else None,
-                       page["error"] or ("მუშავდება…" if not page["after"] else ""))
+        bad = page["error"] or page["note"]
+        self.after.set(page["after"] if not bad else None, bad or ("მუშავდება…" if not page["after"] else ""))
 
     def _ask_preview(self):
         if self.current:
@@ -370,6 +392,7 @@ class ScanDialog(QDialog):
         page = self.current
         if page:
             page["o"].update(o)
+            page["note"] = ""
             self._paint(page)
             self._timer.start()
 
@@ -383,6 +406,7 @@ class ScanDialog(QDialog):
     def find_again(self):
         page = self.current
         if page:
+            page["again"] = page["again"] or not page["error"]
             page["found"] = False
             self.client.submit(("find", page["id"]), P_LOOK, "scan_analyse", page["path"],
                                page["index"], page["password"], self.languages() or "kat+eng")
@@ -412,8 +436,7 @@ class ScanDialog(QDialog):
             return
         if not out.lower().endswith(".pdf"):
             out = files.unique_path(out + ".pdf")
-        if any(os.path.normcase(os.path.abspath(p["path"])) == os.path.normcase(os.path.abspath(out))
-               for p in good):
+        if any(_same(p["path"], out) for p in self.pages):
             QMessageBox.warning(self, self.windowTitle(), "აირჩიეთ სხვა სახელი: ეს საწყისი ფაილია.")
             return
         self.client.cancel(lambda k: k[0] in ("look", "find"))
@@ -439,10 +462,14 @@ class ScanDialog(QDialog):
             bar.setValue(len(good))
             run_task(self.client, "scan_join", (parts, tmp, os.path.basename(stem)), "", None,
                      allow=bar)
+            if bar.wasCanceled():
+                return
             files.put_in_place(tmp, out)
             self.result_path = out
         except (TaskError, OSError) as e:
             bar.close()
+            if str(e) == "cancelled":
+                return
             QMessageBox.warning(self, self.windowTitle(), error_text(
                 str(e) if isinstance(e, TaskError) else "no_access"))
             return
@@ -450,10 +477,9 @@ class ScanDialog(QDialog):
             bar.close()
             bar.deleteLater()
             shutil.rmtree(folder, ignore_errors=True)
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            files.discard(tmp)
             for p in self.pages:  # the previews that were put off
-                if p["after"] is None and not self.result_path:
+                if p["seen"] != self._stamp(p) and not self.result_path:
                     self._look(p, P_FIND + 5)
         self.accept()
 

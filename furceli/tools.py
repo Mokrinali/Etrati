@@ -7,16 +7,16 @@ import uuid
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
-                               QListWidgetItem, QMenu, QMessageBox, QProgressDialog, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressDialog,
+                               QPushButton, QVBoxLayout, QWidget)
 
 from . import APP_NAME, files
 from .client import P_TEXT, TaskError, run_task
-from .dialogs import PDF_FILTER, error_text
-from .forms import (CompareDialog, CompressDialog, FieldDialog, HeaderDialog, LineDialog,
-                    OcrDialog, ProtectDialog, ScrubDialog, SignDialog, SignaturePad, TextDialog,
-                    VerifyDialog, WatermarkDialog)
+from .dialogs import PDF_FILTER, error_text, warn_unprotected
+from .forms import (ChoicesDialog, CompareDialog, CompressDialog, FieldDialog, HeaderDialog,
+                    LineDialog, OcrDialog, ProtectDialog, ScrubDialog, SignDialog, SignaturePad,
+                    TextDialog, VerifyDialog, WatermarkDialog)
 
 TYPE_NAMES = {"Highlight": "მარკერი", "Underline": "ხაზგასმა", "StrikeOut": "გადახაზვა",
               "Squiggly": "ტალღოვანი ხაზი", "Text": "შენიშვნა", "FreeText": "ტექსტი",
@@ -50,7 +50,10 @@ class CommentsPanel(QWidget):
             row.addWidget(b)
         lay.addLayout(row)
 
+    rev = -1  # the state of the document the list describes
+
     def show_list(self, items):
+        self.rev = self.doc.view.rev
         self.list.clear()
         for pno, a in items:
             head = f"გვ. {pno + 1} · {TYPE_NAMES.get(a['type'], a['type'])}"
@@ -63,9 +66,13 @@ class CommentsPanel(QWidget):
 
     def current(self):
         it = self.list.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it else None
+        if it is None or self.doc._busy or self.rev != self.doc.view.rev:
+            return None  # the document has changed and the new list is not here yet
+        return it.data(Qt.ItemDataRole.UserRole)
 
     def _go(self, it):
+        if self.rev != self.doc.view.rev:
+            return
         pno, a = it.data(Qt.ItemDataRole.UserRole)
         self.doc.organize(False)
         self.doc.view.show_rect(pno, a["rect"])
@@ -100,8 +107,12 @@ class ToolsMixin:
             QMessageBox.warning(self, APP_NAME, error_text(str(e)))
             return None
 
+    pending_image = None  # a signature waiting for its place
+
     def set_tool(self, name):
         self._moving = None
+        if name != "image":
+            self.pending_image = None
         if name != "select":
             self.organize(False)
         self.view.set_tool(name)
@@ -204,8 +215,17 @@ class ToolsMixin:
         else:
             queue.clear()
 
+    def _selected_quads(self):
+        """None while some page of the selection is still loading: it would be left out."""
+        if self.view.has_selection() and self.view.selected_text() is None:
+            self.status.emit("ტექსტი ჯერ იტვირთება, სცადეთ ერთ წამში.")
+            return None
+        return self.view.selection_quads()
+
     def mark_selection(self, kind):
-        quads = self.view.selection_quads()
+        quads = self._selected_quads()
+        if quads is None:
+            return
         if quads:
             self.mark_text(kind, quads)
         else:
@@ -249,7 +269,7 @@ class ToolsMixin:
 
     def _add_image(self, pno, rect, path=None):
         if path is None:
-            path = getattr(self, "pending_image", None)
+            path = self.pending_image
         if path is None:
             path, _ = QFileDialog.getOpenFileName(self, "სურათი", "",
                                                   "სურათები (*.png *.jpg *.jpeg *.bmp *.gif *.tif)")
@@ -280,6 +300,7 @@ class ToolsMixin:
 
     def view_menu(self, pno, q, pos):
         menu = QMenu(self)
+        menu.aboutToHide.connect(menu.deleteLater)
         if self.view.has_selection():
             menu.addAction("კოპირება", self.copy)
             menu.addAction("მარკერი", lambda: self.mark_selection("highlight"))
@@ -337,7 +358,10 @@ class ToolsMixin:
             self.status.emit("ამ ფაილში ფორმის შევსება აკრძალულია.")
             return
         if w["kind"] == "sign":
-            self.sign(pno, w["rect"])
+            if w.get("signed"):
+                self.verify()  # never over a signature
+            else:
+                self.sign(pno, w["rect"], w["name"])
             return
         name = w["label"] or w["name"]
         if w["kind"] in ("check", "radio"):
@@ -345,11 +369,29 @@ class ToolsMixin:
                 return
             self.edit(("fill", pno, w["index"], not w["value"]))
             return
+        if w.get("multi"):
+            shown, exports = w["choices"], w.get("exports") or w["choices"]
+            now = [i for i, (e, t) in enumerate(zip(exports, shown))
+                   if e in w["value"] or t in w["value"]]  # some programs keep the shown text
+            dlg = ChoicesDialog(name, shown, [shown[i] for i in now], self)
+            if dlg.exec():
+                value = [exports[shown.index(t)] for t in dlg.chosen()]
+                if value != [exports[i] for i in now] or len(w["value"]) != len(now):
+                    self.edit(("fill", pno, w["index"], value))
+            return
         if w["kind"] in ("combo", "list"):
-            cur = w["choices"].index(w["value"]) if w["value"] in w["choices"] else 0
-            value, ok = QInputDialog.getItem(self, name, "აირჩიეთ:", w["choices"], cur, False)
+            shown, exports = w["choices"], w.get("exports") or w["choices"]
+            cur = next((names.index(w["value"]) for names in (exports, shown)
+                        if w["value"] in names), 0)
+            value, ok = QInputDialog.getItem(self, name, "აირჩიეთ:", shown, cur,
+                                             bool(w.get("editable")))
+            if ok and value in shown:
+                value = exports[shown.index(value)]
         elif w["multiline"]:
             value, ok = QInputDialog.getMultiLineText(self, name, "ტექსტი:", w["value"] or "")
+        elif w.get("password"):
+            value, ok = QInputDialog.getText(self, name, "ტექსტი:", QLineEdit.EchoMode.Password)
+            ok = ok and bool(value)  # an empty answer keeps what is there
         else:
             value, ok = QInputDialog.getText(self, name, "ტექსტი:", text=w["value"] or "")
         if ok and value != (w["value"] or ""):
@@ -372,7 +414,7 @@ class ToolsMixin:
     # -- content -----------------------------------------------------------
     def edit_line(self, pno, point):
         lines = self._task("lines", (pno,), "იკითხება…")
-        if not lines:
+        if lines is None:
             return
         x, y = point
         best = None
@@ -393,7 +435,8 @@ class ToolsMixin:
         """Pages chosen in a dialog that has a .pages_text()."""
         text = dlg.pages_text()
         n = len(self.sizes)
-        return files.parse_group(text, n) if text else list(range(n))
+        # every page once and in order: a second stamp would only cover the first
+        return sorted(set(files.parse_group(text, n))) if text else list(range(n))
 
     def watermark(self):
         dlg = WatermarkDialog(len(self.sizes), self)
@@ -410,11 +453,13 @@ class ToolsMixin:
 
     # -- redaction ---------------------------------------------------------
     def redact_selection(self):
-        for pno, quads in self.view.selection_quads().items():
+        found = self._selected_quads()
+        if found is None:
+            return
+        for pno, quads in found.items():
             for q in quads:
                 xs, ys = [p[0] for p in q], [p[1] for p in q]
-                self.view.marks.setdefault(pno, []).append(
-                    (min(xs) - .5, min(ys), max(xs) + .5, max(ys)))
+                self._mark(pno, (min(xs) - .5, min(ys), max(xs) + .5, max(ys)))
         self.view.clear_selection()
         self.changed.emit()
 
@@ -428,10 +473,14 @@ class ToolsMixin:
             return
         for pno, hits in self.view.hits.items():
             for rect, _ in hits:
-                self.view.marks.setdefault(pno, []).append(
-                    (rect[0] - .5, rect[1], rect[2] + .5, rect[3]))
+                self._mark(pno, (rect[0] - .5, rect[1], rect[2] + .5, rect[3]))
         self.view.viewport().update()
         self.changed.emit()
+
+    def _mark(self, pno, rect):
+        there = self.view.marks.setdefault(pno, [])
+        if rect not in there:
+            there.append(rect)
 
     def _unmark(self, pno, rect):
         self.view.marks[pno].remove(rect)
@@ -456,24 +505,9 @@ class ToolsMixin:
                 "ველები. შენახვამდე Ctrl+Z მუშაობს.\n\nყურადღება: თუ ორიგინალს გადააწერთ, სარეზერვო ასლში "
                 "ტექსტი მაინც დარჩება. გავაგრძელო?") != QMessageBox.StandardButton.Yes:
             return
+        # The engine looks where else the removed words appear: this one and those under the marks.
         word = " ".join(self.query.text().split())
-        if self.edit(("redact", marks, {"fill": (0, 0, 0)})):
-            self._check_word = word
-            QTimer.singleShot(50, self._after_redact)
-
-    def _after_redact(self):
-        if self._busy:
-            QTimer.singleShot(50, self._after_redact)
-            return
-        word, self._check_word = self._check_word, ""
-        if len(word) < 2 or not self.ops or self.ops[-1][0] != "redact":
-            return
-        left = self._quiet("mentions", word)
-        if left:
-            QMessageBox.information(
-                self, "დაფარვა", f"„{word}“ კიდევ გვხვდება გვერდების გარეთ:\n\n• "
-                + "\n• ".join(left[:12])
-                + "\n\nმათ წასაშლელად გამოიყენეთ „ფარული მონაცემების წაშლა“.")
+        self.edit(("redact", marks, {"fill": (0, 0, 0), "word": word}))
 
     def scrub(self):
         dlg = ScrubDialog(self)
@@ -484,16 +518,18 @@ class ToolsMixin:
     def protect(self):
         dlg = ProtectDialog(self.info["protected"], self)
         if dlg.exec() and self.edit(("protect", dlg.options())):
-            self.status.emit("პაროლის ცვლილება შენახვისას ამოქმედდება.")
+            self._after = "პაროლის ცვლილება შენახვისას ამოქმედდება."
 
     def compress(self):
         dlg = CompressDialog(self.info["bytes"], self)
-        if dlg.exec():
-            self.edit(("compress", dlg.options()))
-            self.status.emit("ზომა შენახვის შემდეგ შემცირდება.")
+        if dlg.exec() and self.edit(("compress", dlg.options())):
+            self._after = "ზომა შენახვის შემდეგ შემცირდება."
 
     # -- OCR ---------------------------------------------------------------
     def ocr(self):
+        if self._busy:
+            self.status.emit("მოიცადეთ, ცვლილება ჯერ სრულდება.")
+            return
         if not self.allowed("textlayer"):
             self.status.emit("ავტორმა ამ ფაილის ცვლილება აკრძალა.")
             return
@@ -508,26 +544,31 @@ class ToolsMixin:
         for k, p in enumerate(pages):
             bar.setValue(k)
             bar.setLabelText(f"ტექსტის ამოცნობა: გვერდი {p + 1}")
-            if bar.wasCanceled():
-                break
+            code = "cancelled" if bar.wasCanceled() else ""
             try:
-                words = run_task(self.client, "ocr_words", (p, dlg.languages(), dlg.force()), "",
-                                 None, allow=bar)
+                words = None if code else run_task(
+                    self.client, "ocr_words", (p, dlg.languages(), dlg.force()), "", None, allow=bar)
             except TaskError as e:
+                code = str(e)
+            if code:
                 bar.close()
-                QMessageBox.warning(self, "OCR", error_text(str(e)))
+                bar.deleteLater()
+                if code == "cancelled":
+                    self.status.emit("ტექსტის ამოცნობა გაუქმდა. არაფერი შეცვლილა.")
+                else:
+                    QMessageBox.warning(self, "OCR", error_text(code))
                 return
             if words is None:
                 skipped += 1
             elif words:
                 layer[p] = words
         bar.close()
-        if layer:
-            self.edit(("textlayer", layer))
+        bar.deleteLater()
+        if layer and self.edit(("textlayer", layer)):
             n = sum(len(w) for w in layer.values())
-            self.status.emit(f"ამოცნობილია {n} სიტყვა {len(layer)} გვერდზე"
+            self._after = (f"ამოცნობილია {n} სიტყვა {len(layer)} გვერდზე"
                              + (f"; {skipped} გვერდს ტექსტი უკვე ჰქონდა" if skipped else ""))
-        else:
+        elif not layer:
             self.status.emit("ახალი ტექსტი ვერ ვიპოვე"
                              + (" (გვერდებს ტექსტი უკვე აქვს)" if skipped else ""))
 
@@ -539,7 +580,9 @@ class ToolsMixin:
         if not self.info["can_copy"]:
             QMessageBox.information(self, "ექსპორტი", "ავტორმა ამ ფაილიდან ასლის აღება აკრძალა.")
             return False
-        return not self._busy
+        if self._busy or not self.marks_ok():
+            return False
+        return not self.info["protected"] or warn_unprotected(self)
 
     def export_as(self, kind):
         if not self._may_copy():
@@ -588,7 +631,12 @@ class ToolsMixin:
             return
         start = files.unique_path(os.path.splitext(self.path)[0] + " (PDF-A).pdf")
         out, _ = QFileDialog.getSaveFileName(self, "PDF/A", start, PDF_FILTER)
-        if not out or os.path.normcase(os.path.abspath(out)) == os.path.normcase(self.path):
+        if not out:
+            return
+        if not out.lower().endswith(".pdf"):
+            out = files.unique_path(out + ".pdf")
+        if os.path.normcase(os.path.abspath(out)) == os.path.normcase(self.path):
+            QMessageBox.warning(self, "PDF/A", "აირჩიეთ სხვა სახელი: ეს თვითონ ეს ფაილია.")
             return
         tmp = files.temp_name(out)
         try:
@@ -629,23 +677,32 @@ class ToolsMixin:
         self.view.viewport().update()
         dlg = CompareDialog(os.path.basename(path), os.path.basename(self.path), result, self)
         dlg.chosen.connect(self._show_change)
-        dlg.finished.connect(lambda *_: self._clear_diff())
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._compared = dlg
+        dlg.finished.connect(lambda *_: self._clear_diff(dlg))
         dlg.show()
+
+    _compared = None  # the newest comparison owns the highlights
 
     def _show_change(self, pno, rect):
         self.organize(False)
+        if pno >= len(self.sizes):
+            return  # the page was removed meanwhile
         if rect is not None:
             self.view.show_rect(pno, rect)
         else:
             self.view.go_to(pno)
 
-    def _clear_diff(self):
+    def _clear_diff(self, dlg):
+        if dlg is not self._compared:
+            return
+        self._compared = None
         self.view.diff = {}
         self.view.viewport().update()
 
     # -- certificates ------------------------------------------------------
-    def sign(self, pno=None, rect=None):
-        if self.dirty:
+    def sign(self, pno=None, rect=None, field=""):
+        if self.dirty or self._busy:
             QMessageBox.information(self, "ხელმოწერა", "ჯერ შეინახეთ ცვლილებები: ხელმოწერა შენახულ "
                                     "ფაილს ეხება.")
             return
@@ -656,6 +713,8 @@ class ToolsMixin:
         out, _ = QFileDialog.getSaveFileName(self, "ხელმოწერილი ფაილი", start, PDF_FILTER)
         if not out:
             return
+        if not out.lower().endswith(".pdf"):
+            out = files.unique_path(out + ".pdf")
         if os.path.normcase(os.path.abspath(out)) == os.path.normcase(self.path):
             QMessageBox.warning(self, "ხელმოწერა", "აირჩიეთ სხვა სახელი: ორიგინალი უცვლელი უნდა დარჩეს.")
             return
@@ -664,7 +723,7 @@ class ToolsMixin:
             box = self._task("pdf_box", (pno, rect), "")
             if box is None:
                 return
-            o.update(page=pno, box=box)
+            o.update(page=pno, box=box, field=field)
         tmp = files.temp_name(out)
         try:
             run_task(self.client, "sign", (self.path, tmp, self._password, dlg.pfx(),

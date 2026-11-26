@@ -348,6 +348,7 @@ def test_closing_with_unsaved_changes(win, doc, six, press, answer, closed, save
     win.close_tab(0)
     assert (win.tabs.count() == 0) == closed
     assert (read(six) != original) == saved
+    __import__("furceli.client").client.finish_all()  # the folder goes after the engine
     assert os.path.exists(tmp) != closed  # temporary copies do not stay behind
 
 

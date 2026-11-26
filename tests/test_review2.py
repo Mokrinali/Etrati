@@ -204,7 +204,8 @@ def test_n3_progress_with_its_own_cancel_stays_usable(win, doc):  # noqa: F811
     bar.show()
     button = bar.findChild(QPushButton)
     QTimer.singleShot(80, lambda: QTest.mouseClick(button, Qt.MouseButton.LeftButton))
-    client.run_task(doc.client, "_sleep", (.4,), "", None, allow=bar)
+    with pytest.raises(client.TaskError, match="cancelled"):  # and it stops the task itself
+        client.run_task(doc.client, "_sleep", (8,), "", None, allow=bar)
     assert bar.wasCanceled()
     bar.close()
     bar.deleteLater()
