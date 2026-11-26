@@ -29,3 +29,4 @@ build-log.txt
 build-folder-log.txt
 dist-selftest/
 build-selftest/
+build-selftest-log.txt
