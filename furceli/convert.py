@@ -634,14 +634,27 @@ def _docx_child(src, out, pages):
         cv.close()
 
 
+CHILDREN = ("_docx_child", "_xlsx_child")  # what a helper program may be asked to run
+
+
+def _child_command(name, args) -> list:
+    """How to start a helper program. A packed program (exe) takes no "-c": it runs the
+    helper itself when started with --run-child (see __main__.run_child)."""
+    import json
+    import sys
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-child", name, json.dumps(list(args))]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = (f"import sys; sys.path.insert(0, {root!r}); from {__package__}.convert import {name}; "
+            f"{name}(*{args!r})")
+    return [sys.executable, "-X", "utf8", "-c", code]
+
+
 def _run_child(name, args, seconds) -> bool:
     """Run one function of this module in a program of its own, for at most so long."""
     import sys
     import psutil
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    code = (f"import sys; sys.path.insert(0, {root!r}); from {__package__}.convert import {name}; "
-            f"{name}(*{args!r})")
-    proc = subprocess.Popen([sys.executable, "-X", "utf8", "-c", code], stdin=subprocess.DEVNULL,
+    proc = subprocess.Popen(_child_command(name, args), stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:

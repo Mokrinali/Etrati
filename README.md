@@ -35,6 +35,15 @@ powershell -File scripts\register_pdf.ps1    # სურვილისამე
 
 Office ფაილების გარდაქმნას დაყენებული Microsoft Office სჭირდება, HTML-ისას კი Microsoft Edge.
 
+**exe Python-ის გარეშე გასაშვებად** (ჯერ `scripts\get_tessdata.ps1`):
+
+```powershell
+.\.venv\Scripts\pip install -r requirements-build.txt
+.\.venv\Scripts\pyinstaller --noconfirm --distpath dist-folder --workpath build-folder ETRATI-folder.spec
+```
+
+შედეგი იქნება `dist-folder\ETRATI\ETRATI.exe`, საქაღალდესთან ერთად, რომელიც სწრაფად ეშვება. ერთი ფაილის ვარიანტისთვის გამოიყენეთ `ETRATI.spec`: ის ერთ ფაილად იკვრება, მაგრამ ნელა იხსნება.
+
 ## ფაილების დაცვა
 
 - ორიგინალი დასტურის გარეშე არ იწერება; გადაწერამდე იქმნება სარეზერვო ასლი (ბოლო 50).

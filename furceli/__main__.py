@@ -21,7 +21,22 @@ def take_turn(paths, wait=6.0):
             return None, True
 
 
+def run_child(name, args) -> int:
+    """A helper program started by convert._child_command in a packed program."""
+    import json
+    from furceli import convert
+    if name not in convert.CHILDREN:
+        return 2
+    try:
+        getattr(convert, name)(*json.loads(args))
+    except Exception:
+        return 1
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 3 and sys.argv[1] == "--run-child":
+        return run_child(sys.argv[2], sys.argv[3])  # no window: a helper of a running program
     # Imported here: the engine child process re-imports this module and must
     # not load the GUI.
     from PySide6.QtGui import QIcon
