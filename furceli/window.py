@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self._actions()
         self._toolbar()
         self._menus()
+        self._svg_icons()
         self.link_label = QLabel("")
         self.link_label.setTextFormat(Qt.TextFormat.PlainText)  # addresses come from documents
         self.statusBar().addPermanentWidget(self.link_label)
@@ -112,8 +113,31 @@ class MainWindow(QMainWindow):
         return a
 
     def _paint_icon(self, a, code):
+        if isinstance(code, str):  # design/icons-v2
+            a.setIcon(theme.icon(code))
+            return
         ink = self.palette().color(QPalette.ColorRole.WindowText)
         a.setIcon(glyph(code, ink, theme.color("brand-text") if a.isCheckable() else None))
+
+    SVG_ICONS = {"a_side": "sidebar", "a_open": "open", "a_save": "save", "a_print": "print",
+                 "a_undo": "undo", "a_redo": "redo", "a_org": "pages", "a_pgup": "page-prev",
+                 "a_pgdn": "page-next", "a_out": "zoom-out", "a_in": "zoom-in",
+                 "a_width": "fit-width", "a_page": "fit-page", "a_two": "two-pages",
+                 "a_rot": "rotate-view", "a_find": "search", "a_ai": "ai",
+                 "a_sigpic": "signature", "a_rr": "rotate-page-right", "a_rl": "rotate-page-left",
+                 "a_del": "delete", "a_dup": "duplicate", "a_ins": "insert-file",
+                 "a_blank": "insert-blank", "a_crop": "crop", "a_ext": "extract",
+                 "a_color": "plus"}
+
+    def _svg_icons(self):
+        """One drawn style for the buttons people see most (design/icons-v2)."""
+        names = {getattr(self, k): v for k, v in self.SVG_ICONS.items() if hasattr(self, k)}
+        names.update({self.tool_acts[k]: k for k in self.tool_acts})
+        self._glyphs = [(a, names.get(a, c)) for a, c in self._glyphs]
+        known = {a for a, _ in self._glyphs}
+        self._glyphs += [(a, n) for a, n in names.items() if a not in known]
+        for a, code in self._glyphs:
+            self._paint_icon(a, code)
 
     def _edit_action(self, text, fn, key=None, icon=None):
         a = self._act(text, lambda: self.doc and fn(self.doc), key, icon)
@@ -394,7 +418,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self.a_in)
         tb.addActions([self.a_width, self.a_page])
         tb.addSeparator()
-        tb.addActions([self.a_two, self.a_rot, self.a_find, self.a_ai])
+        tb.addActions([self.a_two, self.a_find, self.a_ai])
         self.addToolBarBreak()
         t2 = QToolBar("კომენტარი და რედაქტირება")
         t2.setMovable(False)
@@ -412,10 +436,6 @@ class MainWindow(QMainWindow):
         self.swatches.show_color(QColor(self.settings.value("color", theme.color("ink-pen").name())))
         t2.addWidget(self.swatches)
         self.a_color.setText("სხვა ფერი…")
-        self.a_color.setIcon(QIcon())
-        self._glyphs = [(a, c) for a, c in self._glyphs if a is not self.a_color]
-        self._paint_icon(self.a_color, 0xE710)  # +
-        self._glyphs.append((self.a_color, 0xE710))
         t2.addAction(self.a_color)
 
     def _menus(self):

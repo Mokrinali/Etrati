@@ -171,7 +171,7 @@ class ScanDialog(QDialog):
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self.list)
         for row in ((("დამატება…", self.add), ("ამოღება", self.remove)),
-                    (("▲", lambda: self.shift(-1)), ("▼", lambda: self.shift(1)))):
+                    (("ზემოთ", lambda: self.shift(-1)), ("ქვემოთ", lambda: self.shift(1)))):
             h = QHBoxLayout()
             for text, slot in row:
                 h.addWidget(self._button(text, slot))
@@ -228,6 +228,11 @@ class ScanDialog(QDialog):
 
     def _button(self, text, slot):
         b = QPushButton(text)
+        if text in ("ზემოთ", "ქვემოთ"):
+            b.setText("")
+            b.setIcon(theme.icon("arrow-up" if text == "ზემოთ" else "arrow-down"))
+            b.setToolTip(text)
+            b.setAccessibleName(text)
         b.setAutoDefault(False)
         b.clicked.connect(lambda *_: slot())
         return b

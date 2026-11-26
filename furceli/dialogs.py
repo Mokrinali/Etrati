@@ -114,8 +114,13 @@ class MergeDialog(QDialog):
         lay.addWidget(self.table)
         row = QHBoxLayout()
         for text, slot in (("დამატება…", self.add), ("ამოღება", self.remove),
-                           ("▲ ზემოთ", lambda: self.shift(-1)), ("▼ ქვემოთ", lambda: self.shift(1))):
+                           ("ზემოთ", lambda: self.shift(-1)), ("ქვემოთ", lambda: self.shift(1))):
             b = QPushButton(text)
+            if text in ("ზემოთ", "ქვემოთ"):
+                b.setText("")
+                b.setIcon(theme.icon("arrow-up" if text == "ზემოთ" else "arrow-down"))
+                b.setToolTip(text)
+                b.setAccessibleName(text)
             b.setAutoDefault(False)
             b.clicked.connect(lambda *_, s=slot: s())
             row.addWidget(b)

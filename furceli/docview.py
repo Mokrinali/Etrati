@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, Q
                                QStackedWidget, QTabWidget, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from . import files
+from . import files, theme
 from .client import (P_OPEN, P_SEARCH, P_THUMB, EngineClient, TaskError, _blocking, run_task,
                      run_thread)
 from .dialogs import (PDF_FILTER, CropDialog, InsertDialog, SplitDialog, error_text, inspect_file,
@@ -207,7 +207,12 @@ class DocView(ToolsMixin, QWidget):
         self.query.textChanged.connect(lambda *_: self._search_timer.start())
         v.addWidget(self.query)
         row = QHBoxLayout()
-        self.prev_btn, self.next_btn = QPushButton("‹ წინა"), QPushButton("შემდეგი ›")
+        self.prev_btn, self.next_btn = QPushButton(), QPushButton()
+        for b, name, tip in ((self.prev_btn, "chevron-left", "წინა შედეგი (Shift+F3)"),
+                             (self.next_btn, "chevron-right", "შემდეგი შედეგი (F3)")):
+            b.setIcon(theme.icon(name))
+            b.setToolTip(tip)
+            b.setAccessibleName(tip)
         self.prev_btn.clicked.connect(lambda: self.next_hit(-1))
         self.next_btn.clicked.connect(lambda: self.next_hit(1))
         row.addWidget(self.prev_btn)

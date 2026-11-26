@@ -87,3 +87,17 @@ def test_colour_circles(win, tmp_path):  # noqa: F811
 def test_toolbar_fields_show_their_numbers(win, tmp_path):  # noqa: F811
     open_doc(win, build(tmp_path / "f.pdf"))
     assert win.page_box.lineEdit().width() > 20 and win.page_box.text() == "1"
+
+
+def test_drawn_icons(win):  # noqa: F811
+    """design/icons-v2: every named icon exists and draws; view rotation is off the toolbar."""
+    import os
+    from furceli import theme
+    folder = os.path.join(os.path.dirname(theme.__file__), "assets", "icons")
+    for name in set(win.SVG_ICONS.values()) | set(win.tool_acts):
+        assert os.path.exists(os.path.join(folder, name + ".svg")), name
+    ic = theme.icon("save").pixmap(20, 20).toImage()
+    assert any(ic.pixelColor(x, y).alpha() > 0 for x in range(20) for y in range(20))
+    assert win.a_rot not in win.toolbar.actions() and not win.a_save.icon().isNull()
+    doc_buttons = ("chevron-left", "chevron-right", "arrow-up", "arrow-down")
+    assert all(os.path.exists(os.path.join(folder, n + ".svg")) for n in doc_buttons)

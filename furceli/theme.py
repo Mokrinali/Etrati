@@ -137,6 +137,29 @@ def apply_theme(app, mode: str = "light") -> str:
     return _now
 
 
+def icon(name: str) -> "QIcon":
+    """An icon of assets/icons (design/icons-v2): ink, red while checked, faint when off."""
+    from PySide6.QtCore import QByteArray, QRectF
+    from PySide6.QtGui import QIcon, QPainter, QPixmap
+    from PySide6.QtSvg import QSvgRenderer
+    with open(os.path.join(ASSETS, "icons", name + ".svg"), encoding="utf-8") as f:
+        svg = f.read()
+    out = QIcon()
+    for tok, mode, state in (("ink", QIcon.Mode.Normal, QIcon.State.Off),
+                             ("brand-text", QIcon.Mode.Normal, QIcon.State.On),
+                             ("ink-disabled", QIcon.Mode.Disabled, QIcon.State.Off),
+                             ("ink-disabled", QIcon.Mode.Disabled, QIcon.State.On)):
+        r = QSvgRenderer(QByteArray(svg.replace("currentColor", color(tok).name()).encode()))
+        pix = QPixmap(64, 64)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r.render(p, QRectF(0, 0, 64, 64))
+        p.end()
+        out.addPixmap(pix, mode, state)
+    return out
+
+
 def variant(button, kind: str):
     """primary, ghost or danger: how a push button looks (design/components/Button)."""
     button.setProperty("variant", kind)

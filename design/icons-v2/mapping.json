@@ -1,0 +1,324 @@
+[
+ {
+  "file": "svg/sidebar.svg",
+  "code": "window.py a_side",
+  "label": "გვერდითი პანელი",
+  "current": "0xE8A0",
+  "status": "same"
+ },
+ {
+  "file": "svg/open.svg",
+  "code": "window.py a_open",
+  "label": "გახსნა…",
+  "current": "0xE8E5",
+  "status": "same"
+ },
+ {
+  "file": "svg/save.svg",
+  "code": "window.py a_save",
+  "label": "შენახვა",
+  "current": "0xE74E",
+  "status": "same"
+ },
+ {
+  "file": "svg/print.svg",
+  "code": "window.py a_print",
+  "label": "ბეჭდვა…",
+  "current": "0xE749",
+  "status": "same"
+ },
+ {
+  "file": "svg/undo.svg",
+  "code": "window.py a_undo",
+  "label": "გაუქმება",
+  "current": "0xE7A7",
+  "status": "same"
+ },
+ {
+  "file": "svg/redo.svg",
+  "code": "window.py a_redo",
+  "label": "გამეორება",
+  "current": "0xE7A6",
+  "status": "same"
+ },
+ {
+  "file": "svg/pages.svg",
+  "code": "window.py a_org",
+  "label": "გვერდების მართვა",
+  "current": "0xE80A",
+  "status": "same"
+ },
+ {
+  "file": "svg/page-prev.svg",
+  "code": "window.py a_pgup",
+  "label": "წინა გვერდი",
+  "current": "0xE70E",
+  "status": "same"
+ },
+ {
+  "file": "svg/page-next.svg",
+  "code": "window.py a_pgdn",
+  "label": "შემდეგი გვერდი",
+  "current": "0xE70D",
+  "status": "same"
+ },
+ {
+  "file": "svg/zoom-out.svg",
+  "code": "window.py a_out",
+  "label": "დაპატარავება",
+  "current": "0xE71F",
+  "status": "same"
+ },
+ {
+  "file": "svg/zoom-in.svg",
+  "code": "window.py a_in",
+  "label": "გადიდება",
+  "current": "0xE8A3",
+  "status": "same"
+ },
+ {
+  "file": "svg/fit-width.svg",
+  "code": "window.py a_width",
+  "label": "სიგანეზე მორგება",
+  "current": "— (აიკონი არ აქვს, ზოლში ტექსტია)",
+  "status": "new"
+ },
+ {
+  "file": "svg/fit-page.svg",
+  "code": "window.py a_page",
+  "label": "მთელი გვერდი",
+  "current": "— (აიკონი არ აქვს, ზოლში ტექსტია)",
+  "status": "new"
+ },
+ {
+  "file": "svg/two-pages.svg",
+  "code": "window.py a_two",
+  "label": "ორი გვერდი გვერდიგვერდ",
+  "current": "0xE89A",
+  "status": "same"
+ },
+ {
+  "file": "svg/rotate-view.svg",
+  "code": "window.py a_rot",
+  "label": "ხედის მობრუნება",
+  "current": "0xE7AD (= a_rr)",
+  "status": "changed"
+ },
+ {
+  "file": "svg/search.svg",
+  "code": "window.py a_find",
+  "label": "ძიება",
+  "current": "0xE721",
+  "status": "same"
+ },
+ {
+  "file": "svg/ai.svg",
+  "code": "window.py a_ai",
+  "label": "AI ასისტენტი",
+  "current": "0xE99A (რობოტი)",
+  "status": "changed"
+ },
+ {
+  "file": "svg/select.svg",
+  "code": "window.py TOOLS select",
+  "label": "მონიშვნა",
+  "current": "0xE8B0",
+  "status": "same"
+ },
+ {
+  "file": "svg/highlight.svg",
+  "code": "window.py TOOLS highlight",
+  "label": "მარკერი",
+  "current": "0xE7E6",
+  "status": "same"
+ },
+ {
+  "file": "svg/underline.svg",
+  "code": "window.py TOOLS underline",
+  "label": "ხაზგასმა",
+  "current": "0xE8DC",
+  "status": "same"
+ },
+ {
+  "file": "svg/strikeout.svg",
+  "code": "window.py TOOLS strikeout",
+  "label": "გადახაზვა",
+  "current": "0xEDE0",
+  "status": "same"
+ },
+ {
+  "file": "svg/note.svg",
+  "code": "window.py TOOLS note",
+  "label": "შენიშვნა",
+  "current": "0xE90A",
+  "status": "same"
+ },
+ {
+  "file": "svg/text.svg",
+  "code": "window.py TOOLS text",
+  "label": "ტექსტი",
+  "current": "0xE8D2",
+  "status": "same"
+ },
+ {
+  "file": "svg/ink.svg",
+  "code": "window.py TOOLS ink",
+  "label": "ხატვა",
+  "current": "0xED63",
+  "status": "same"
+ },
+ {
+  "file": "svg/rect.svg",
+  "code": "window.py TOOLS rect",
+  "label": "ოთხკუთხედი",
+  "current": "0xE7FB",
+  "status": "same"
+ },
+ {
+  "file": "svg/ellipse.svg",
+  "code": "window.py TOOLS ellipse",
+  "label": "ელიფსი",
+  "current": "0xEA3A",
+  "status": "same"
+ },
+ {
+  "file": "svg/line.svg",
+  "code": "window.py TOOLS line",
+  "label": "ხაზი",
+  "current": "0xE738",
+  "status": "same"
+ },
+ {
+  "file": "svg/arrow.svg",
+  "code": "window.py TOOLS arrow",
+  "label": "ისარი",
+  "current": "0xE72A",
+  "status": "same"
+ },
+ {
+  "file": "svg/stamp.svg",
+  "code": "window.py TOOLS stamp",
+  "label": "შტამპი",
+  "current": "0xE8FB (✓)",
+  "status": "changed"
+ },
+ {
+  "file": "svg/image.svg",
+  "code": "window.py TOOLS image",
+  "label": "სურათი",
+  "current": "0xEB9F",
+  "status": "same"
+ },
+ {
+  "file": "svg/edit.svg",
+  "code": "window.py TOOLS edit",
+  "label": "ტექსტის შეცვლა",
+  "current": "0xE70F",
+  "status": "same"
+ },
+ {
+  "file": "svg/redact.svg",
+  "code": "window.py TOOLS redact",
+  "label": "დასაფარის მონიშვნა",
+  "current": "0xE75C",
+  "status": "same"
+ },
+ {
+  "file": "svg/field.svg",
+  "code": "window.py TOOLS field",
+  "label": "ფორმის ველი",
+  "current": "0xE9D5",
+  "status": "same"
+ },
+ {
+  "file": "svg/signature.svg",
+  "code": "window.py a_sigpic",
+  "label": "ხელმოწერის სურათი…",
+  "current": "0xE929",
+  "status": "same"
+ },
+ {
+  "file": "svg/rotate-page-right.svg",
+  "code": "window.py a_rr",
+  "label": "მობრუნება მარჯვნივ",
+  "current": "0xE7AD (= a_rot)",
+  "status": "changed"
+ },
+ {
+  "file": "svg/rotate-page-left.svg",
+  "code": "window.py a_rl",
+  "label": "მობრუნება მარცხნივ",
+  "current": "0xE7A7 (= a_undo!)",
+  "status": "changed"
+ },
+ {
+  "file": "svg/delete.svg",
+  "code": "window.py a_del",
+  "label": "წაშლა",
+  "current": "0xE74D",
+  "status": "same"
+ },
+ {
+  "file": "svg/duplicate.svg",
+  "code": "window.py a_dup",
+  "label": "დუბლირება",
+  "current": "0xE8C8",
+  "status": "same"
+ },
+ {
+  "file": "svg/insert-file.svg",
+  "code": "window.py a_ins",
+  "label": "ჩასმა ფაილიდან…",
+  "current": "0xE710",
+  "status": "same"
+ },
+ {
+  "file": "svg/insert-blank.svg",
+  "code": "window.py a_blank",
+  "label": "ცარიელი გვერდის ჩასმა",
+  "current": "0xE7C3",
+  "status": "same"
+ },
+ {
+  "file": "svg/crop.svg",
+  "code": "window.py a_crop",
+  "label": "ჩამოჭრა…",
+  "current": "0xE7A8",
+  "status": "same"
+ },
+ {
+  "file": "svg/extract.svg",
+  "code": "window.py a_ext",
+  "label": "ამოღება ახალ ფაილად…",
+  "current": "0xE8A7",
+  "status": "same"
+ },
+ {
+  "file": "svg/chevron-left.svg",
+  "code": "docview.py prev_btn",
+  "label": "ძიება: წინა",
+  "current": "ტექსტი „‹ წინა“",
+  "status": "new"
+ },
+ {
+  "file": "svg/chevron-right.svg",
+  "code": "docview.py next_btn",
+  "label": "ძიება: შემდეგი",
+  "current": "ტექსტი „შემდეგი ›“",
+  "status": "new"
+ },
+ {
+  "file": "svg/arrow-up.svg",
+  "code": "dialogs.py MergeDialog",
+  "label": "ზემოთ",
+  "current": "ტექსტი „▲ ზემოთ“",
+  "status": "new"
+ },
+ {
+  "file": "svg/arrow-down.svg",
+  "code": "dialogs.py MergeDialog",
+  "label": "ქვემოთ",
+  "current": "ტექსტი „▼ ქვემოთ“",
+  "status": "new"
+ }
+]
