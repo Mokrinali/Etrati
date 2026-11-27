@@ -123,8 +123,9 @@ class ToolsMixin:
         for v in self.views:  # the pen is one for every pane
             v.set_tool(name)
         if name == "object":
-            self.status.emit("დააწკაპუნეთ სურათზე: გადათრევა — გადატანა, კუთხე — ზომა, "
-                             "Delete — წაშლა, მარჯვენა ღილაკი — ჩანაცვლება")
+            self.status.emit("დააწკაპუნეთ სურათზე: გადათრევა — გადატანა, კუთხე — ზომა პროპორციით "
+                             "(Shift — თავისუფლად), Delete — წაშლა, მარჯვენა ღილაკი — ჩანაცვლება. "
+                             "Ctrl+V — სურათის ჩასმა ბუფერიდან")
         self.changed.emit()
 
     def load_comments(self):
@@ -290,16 +291,84 @@ class ToolsMixin:
         except OSError:
             QMessageBox.warning(self, "სურათი", error_text("no_access"))
             return
+        signature = path == self.pending_image
+        self.set_tool("object")  # the new picture comes chosen: move, size, other pages
+        self._pick_object, self._ask_copy = (pno, tuple(rect)), not signature
         if self.edit(("image", pno, rect, copy)):
             self.pending_image = None
-            self.set_tool("select")
+            return True
+        self._pick_object, self._ask_copy = None, False
+        return False
 
     # -- pictures already on the page (HANDOFF.md, item 7) -----------------
     def _load_objects(self, v, pno):
         v.objects[pno] = self._quiet("images", pno) or []
 
+    _pick_object = None   # (page, rectangle): chosen again once the edit is shown
+    _ask_copy = False     # a picture just put in: ask about the other pages
+
     def _object_moved(self, pno, o, rect):
+        self._pick_object = (pno, tuple(rect))
         self.edit(("image_move", pno, o["xref"], tuple(o["rect"]), tuple(rect)))
+
+    def _object_turned(self, pno, o, degrees):
+        x0, y0, x1, y1 = o["rect"]
+        cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
+        self._pick_object = (pno, (cx - h / 2, cy - w / 2, cx + h / 2, cy + w / 2))
+        self.edit(("image_turn", pno, o["xref"], tuple(o["rect"]), degrees))
+
+    def _object_copy(self, pno, o):
+        from .objects_ui import CopyDialog
+        w, h = self.sizes[pno]
+        x0, y0, x1, y1 = o["rect"]
+        near = (0 if (x0 + x1) / 2 < w / 2 else 1, 0 if (y0 + y1) / 2 < h / 2 else 1)
+        dlg = CopyDialog(pno, len(self.sizes), near, parent=self)
+        if not dlg.exec():
+            return
+        pages = dlg.pages(quiet=True)
+        if pages:
+            self._pick_object = (pno, tuple(o["rect"]))
+            self.edit(("image_copy", pno, o["xref"], tuple(o["rect"]), pages, dlg.anchor()))
+
+    def _after_objects(self, kind):
+        """After an edit: the picture worked on is chosen again (its bar stays at hand)."""
+        want, self._pick_object = self._pick_object, None
+        ask, self._ask_copy = self._ask_copy, False
+        if not want or kind != "edit" or self.view.tool != "object":
+            return
+        pno, rect = want
+        self._load_objects(self.view, pno)
+        inside = [o for o in self.view.objects.get(pno, ())
+                  if o["movable"] and all(a >= b - 1.5 for a, b in zip(o["rect"][:2], rect[:2]))
+                  and all(a <= b + 1.5 for a, b in zip(o["rect"][2:], rect[2:]))]
+        if inside:  # the one drawn last: a new picture is drawn over the others
+            self.view.select_object(pno, inside[-1])
+            if ask and len(self.sizes) > 1:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self._object_copy(pno, inside[-1]))
+
+    def image_rect(self, pno, center, path):
+        """Where a picture file goes when put at a point: its own size (96 dpi), fitted in
+        the page; None when it is no picture."""
+        from PySide6.QtGui import QImageReader
+        size = QImageReader(path).size()
+        if not size.isValid() or size.isEmpty():
+            return None
+        pw, ph = self.sizes[pno]
+        w, h = size.width() * .75, size.height() * .75
+        k = min(1.0, pw * .6 / w, ph * .6 / h)
+        w, h = w * k, h * k
+        x = min(max(center[0] - w / 2, 0), pw - w)
+        y = min(max(center[1] - h / 2, 0), ph - h)
+        return (x, y, x + w, y + h)
+
+    def place_image(self, pno, center, path):
+        """A picture file put on a page at a point (dropped, pasted)."""
+        rect = self.image_rect(pno, center, path)
+        if rect is None:
+            QMessageBox.warning(self, "სურათი", error_text("bad_image"))
+            return False
+        return self._add_image(pno, rect, path)
 
     def _object_deleted(self, pno, o):
         self.edit(("image_del", pno, o["xref"], tuple(o["rect"])))

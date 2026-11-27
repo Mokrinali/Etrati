@@ -334,5 +334,12 @@
   "label": "ობიექტები",
   "current": "",
   "status": "new"
+ },
+ {
+  "file": "svg/lock.svg",
+  "code": "objects_ui.py ObjectBar.lock",
+  "label": "პროპორციის დაცვა",
+  "current": "",
+  "status": "new"
  }
 ]

@@ -232,7 +232,8 @@ def test_signature_picture(win, tmp_path, monkeypatch):  # noqa: F811
     assert doc.view.tool == "image"
     drag(doc, 0, (100, 600), (300, 680))
     idle(doc)
-    assert len(doc.ops) == 1 and doc.view.tool == "select"
+    assert len(doc.ops) == 1 and doc.view.tool == "object"  # comes chosen: move or size it at once
+    assert doc.view.selected_object() is not None
     doc.undo()
     idle(doc)
     doc.redo()

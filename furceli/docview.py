@@ -132,6 +132,8 @@ class DocView(ToolsMixin, QWidget):
         v.objectsWanted.connect(lambda p: self._load_objects(v, p))
         v.objectChanged.connect(mine(lambda *a: self._object_moved(*a)))
         v.objectDeleted.connect(mine(lambda *a: self._object_deleted(*a)))
+        v.objectTurned.connect(mine(lambda *a: self._object_turned(*a)))
+        v.objectCopy.connect(mine(lambda *a: self._object_copy(*a)))
         v.uriActivated.connect(self._open_uri)
         v.pageChanged.connect(lambda p: v is self._active and (
             self._page_changed(p), self.pageChanged.emit(p)))
@@ -744,6 +746,7 @@ class DocView(ToolsMixin, QWidget):
             for lst in (self.list, self.grid):
                 lst.model_.reset()
         self._fill_toc(info["toc"])
+        self._after_objects(kind)
         sel = kept if self._select_after is None else self._select_after
         sel = [p for p in sel if p < len(self.sizes)]
         if self.organizing:

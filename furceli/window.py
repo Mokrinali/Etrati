@@ -5,7 +5,7 @@ import math
 import os
 import time
 
-from PySide6.QtCore import QSettings, QSize, Qt, QUrl
+from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QUrl
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont, QIcon, QKeySequence,
                            QPainter, QPalette, QPixmap)
 from PySide6.QtWidgets import (QColorDialog, QComboBox, QFileDialog, QFormLayout, QInputDialog, QDialog, QDialogButtonBox,
@@ -167,6 +167,7 @@ class MainWindow(QMainWindow):
         self.a_quit = self._act("გასვლა", self.close, "Ctrl+Q", needs_doc=False)
         self.a_props = self._act("ფაილის თვისებები", self.properties, "Ctrl+D", 0xE946)
         self.a_copy = self._act("კოპირება", lambda: self.doc.copy(), "Ctrl+C")
+        self.a_paste = self._act("სურათის ჩასმა ბუფერიდან", self._paste, "Ctrl+V")
         self.a_find = self._act("ძიება", lambda: self.doc.open_search(), "Ctrl+F", 0xE721)
         self.a_next = self._act("შემდეგი შედეგი", lambda: self.doc.next_hit(1), "F3")
         self.a_prev = self._act("წინა შედეგი", lambda: self.doc.next_hit(-1), "Shift+F3")
@@ -219,6 +220,7 @@ class MainWindow(QMainWindow):
         # With a Georgian keyboard layout active Ctrl+letter may not match above.
         self._by_vk = {ord("O"): self.a_open, ord("P"): self.a_print, ord("W"): self.a_close,
                        ord("Q"): self.a_quit, ord("D"): self.a_props, ord("C"): self.a_copy,
+                       ord("V"): self.a_paste,
                        ord("F"): self.a_find, ord("R"): self.a_rot, ord("G"): self.a_goto,
                        ord("S"): self.a_save, ord("Z"): self.a_undo, ord("Y"): self.a_redo,
                        ord("E"): self.a_org, ord("M"): self.a_merge}
@@ -488,7 +490,7 @@ class MainWindow(QMainWindow):
         e = mb.addMenu("რედაქტირება")
         e.addActions([self.a_undo, self.a_redo])
         e.addSeparator()
-        e.addAction(self.a_copy)
+        e.addActions([self.a_copy, self.a_paste])
         e.addSeparator()
         e.addActions([self.a_find, self.a_next, self.a_prev])
         g = mb.addMenu("გვერდები")
@@ -1103,7 +1105,66 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(e)
 
+    PLACEABLE = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"}
+
+    def _paste(self):
+        """A copied picture (a screenshot, an image file) onto the middle of the page in view."""
+        import time
+        from PySide6.QtWidgets import QApplication
+        doc = self.doc
+        if doc is None or not doc.loaded or not doc.allowed("image"):
+            return
+        board = QApplication.clipboard()
+        md = board.mimeData()
+        path = None
+        if md is not None and md.hasImage() and not board.image().isNull():
+            path = os.path.join(doc._session(), f"pasted-{time.time_ns()}.png")
+            if not board.image().save(path, "PNG"):
+                path = None
+        elif md is not None and md.hasUrls():
+            path = next((u.toLocalFile() for u in md.urls()
+                         if os.path.splitext(u.toLocalFile())[1].lower() in self.PLACEABLE), None)
+        if not path:
+            self.statusBar().showMessage("ბუფერში სურათი არ არის.", 4000)
+            return
+        v = doc.view
+        mid = QPointF(v.viewport().width() / 2, v.viewport().height() / 2) * v.dpr
+        pno = v._nearest_page(mid)
+        q = v.doc_to_page(pno, mid + QPointF(v._origin()))
+        doc.place_image(pno, (q.x(), q.y()), path)
+
+    def _picture_drop(self, e):
+        """(document, page, point, file) when picture files come over an open page."""
+        doc = self.doc
+        paths = [u.toLocalFile() for u in e.mimeData().urls()]
+        if (doc is None or not doc.loaded or not paths or not doc.allowed("image")
+                or not all(os.path.splitext(p)[1].lower() in self.PLACEABLE for p in paths)):
+            return None
+        v = doc.view
+        pos = v.viewport().mapFromGlobal(self.mapToGlobal(e.position().toPoint()))
+        if not v.viewport().rect().contains(pos) or not v.sizes:
+            return None
+        pt = QPointF(pos) * v.dpr
+        pno = v._nearest_page(pt)
+        q = v.doc_to_page(pno, pt + QPointF(v._origin()))
+        return doc, pno, (q.x(), q.y()), paths[0]
+
+    def dragMoveEvent(self, e):
+        hit = self._picture_drop(e)
+        if hit:
+            doc, pno, at, path = hit
+            e.acceptProposedAction()
+            self.drop_frame.hide()
+            doc.view.show_drop(pno, doc.image_rect(pno, at, path))
+            self.statusBar().showMessage(f"გაუშვით — სურათი ჩაისმება ამ ადგილას, გვერდზე {pno + 1}")
+        elif self.doc:
+            self.doc.view.show_drop()
+        super().dragMoveEvent(e)
+
     def dragEnterEvent(self, e):
+        if self._picture_drop(e):
+            e.acceptProposedAction()
+            return
         if any(os.path.splitext(u.toLocalFile())[1].lower() in SUPPORTED
                for u in e.mimeData().urls()):
             e.acceptProposedAction()
@@ -1113,9 +1174,19 @@ class MainWindow(QMainWindow):
 
     def dragLeaveEvent(self, e):
         self.drop_frame.hide()
+        if self.doc:
+            self.doc.view.show_drop()
 
     def dropEvent(self, e):
         self.drop_frame.hide()
+        hit = self._picture_drop(e)
+        if self.doc:
+            self.doc.view.show_drop()
+        if hit:
+            doc, pno, at, path = hit
+            self.statusBar().clearMessage()
+            doc.place_image(pno, at, path)
+            return
         other = []
         for u in e.mimeData().urls():
             path = u.toLocalFile()

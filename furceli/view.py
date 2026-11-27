@@ -12,7 +12,7 @@ from collections import OrderedDict
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette, QPen
-from PySide6.QtWidgets import QAbstractScrollArea
+from PySide6.QtWidgets import QAbstractScrollArea, QApplication
 
 from . import theme
 from .client import P_TEXT, P_VISIBLE
@@ -79,6 +79,8 @@ class PageView(QAbstractScrollArea):
     objectsWanted = Signal(int)        # page whose pictures the "objects" tool needs
     objectChanged = Signal(int, object, object)  # page, picture, its new place (points)
     objectDeleted = Signal(int, object)          # page, picture
+    objectTurned = Signal(int, object, int)      # page, picture, degrees clockwise as shown
+    objectCopy = Signal(int, object)             # page, picture: "on other pages too…"
 
     marks, hits, current_hit = _shared("marks"), _shared("hits"), _shared("current_hit")
     diff, frames = _shared("diff"), _shared("frames")
@@ -119,6 +121,7 @@ class PageView(QAbstractScrollArea):
         self.objects: dict[int, list] = {}  # pictures of pages, for the "objects" tool
         self._obj = None                   # (page, picture) chosen with the "objects" tool
         self._obj_drag = None              # [mode, start point, anchor, rect being shown]
+        self._drop = None                  # (page, rect): where a dragged picture would go
         self._stale: dict = {}             # last picture of a page that was just edited
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -174,6 +177,7 @@ class PageView(QAbstractScrollArea):
         self._sel_a = self._sel_b = None
         self._shape = None
         self.objects, self._obj, self._obj_drag = {}, None, None
+        self._hide_bar()
         self.sizes = sizes
         if same:  # nothing moved: the reader keeps the exact scroll position
             self.viewport().update()
@@ -571,6 +575,7 @@ class PageView(QAbstractScrollArea):
         p.scale(1 / self.dpr, 1 / self.dpr)
         o = self._origin()
         p.translate(-o.x(), -o.y())
+        drew_object = False
         for pno in self._visible_pages():
             r = self.rects[pno]
             p.fillRect(r, theme.color("paper"))
@@ -619,6 +624,9 @@ class PageView(QAbstractScrollArea):
                 self._paint_shape(p)
             if self._obj and self._obj[0] == pno:
                 self._paint_object(p)
+                drew_object = True
+            if self._drop and self._drop[0] == pno:
+                self._paint_drop(p)
             if self._crop and self._crop[0] == pno:
                 keep = self._doc_rect(pno, self._crop_rect())
                 shade = QColor(0, 0, 0, 110)
@@ -635,6 +643,8 @@ class PageView(QAbstractScrollArea):
                 p.drawRect(keep)
             p.setPen(QPen(QColor(0, 0, 0, 60), 1))
             p.drawRect(r.adjusted(-1, -1, 0, 0))
+        if not drew_object:  # its page scrolled away: the bar goes with it
+            self._hide_bar()
 
     # -- tools -------------------------------------------------------------
     BOX_TOOLS = {"text", "rect", "ellipse", "stamp", "image", "redact", "field", "signbox",
@@ -647,6 +657,7 @@ class PageView(QAbstractScrollArea):
         self.cancel_crop()
         self.tool, self._shape = name, None
         self._obj = self._obj_drag = None
+        self._hide_bar()
         cursor = {"select": Qt.CursorShape.ArrowCursor, "edit": Qt.CursorShape.IBeamCursor,
                   "highlight": Qt.CursorShape.IBeamCursor,
                   "underline": Qt.CursorShape.IBeamCursor,
@@ -681,9 +692,71 @@ class PageView(QAbstractScrollArea):
                 return c
         return None
 
+    def _bar(self):
+        bar = getattr(self, "_object_bar", None)
+        if bar is None:
+            from .objects_ui import ObjectBar
+            bar = self._object_bar = ObjectBar(self.viewport())
+            bar.sized.connect(self._bar_sized)
+            bar.turned.connect(lambda d: self._obj and self.objectTurned.emit(*self._obj, d))
+            bar.copy.connect(lambda: self._obj and self.objectCopy.emit(*self._obj))
+            bar.delete.connect(lambda: self._obj and self.objectDeleted.emit(*self._obj))
+        return bar
+
+    def _bar_sized(self, w, h):
+        if not self._obj:
+            return
+        pno, o = self._obj
+        x0, y0 = o["rect"][:2]
+        self.objectChanged.emit(pno, o, (x0, y0, x0 + w, y0 + h))
+
+    def _place_bar(self, box):
+        """Over the chosen picture (under it when there is no room above), in view pixels."""
+        bar = self._bar()
+        if self._obj_drag:
+            bar.hide()
+            return
+        r = self._obj[1]["rect"]
+        bar.show_size(r[2] - r[0], r[3] - r[1])
+        bar.adjustSize()
+        o = QPointF(self._origin())
+        left, top, bottom = ((box.left() - o.x()) / self.dpr, (box.top() - o.y()) / self.dpr,
+                             (box.bottom() - o.y()) / self.dpr)
+        vw, vh = self.viewport().width(), self.viewport().height()
+        y = top - bar.height() - 10 if top - bar.height() - 10 >= 4 else bottom + 10
+        x = min(max(left, 4), max(vw - bar.width() - 4, 4))
+        pos = QPoint(round(x), round(min(max(y, 4), max(vh - bar.height() - 4, 4))))
+        if bar.pos() != pos:
+            bar.move(pos)
+        if not bar.isVisible():
+            bar.show()
+
+    def _hide_bar(self):
+        bar = getattr(self, "_object_bar", None)
+        if bar is not None and bar.isVisible():
+            bar.hide()
+
+    def show_drop(self, pno=None, rect=None):
+        drop = (pno, tuple(rect)) if rect is not None else None
+        if drop != self._drop:
+            self._drop = drop
+            self.viewport().update()
+
+    def _paint_drop(self, p):
+        pno, rect = self._drop
+        box = self._doc_rect(pno, rect)
+        p.fillRect(box, theme.color("mark-crop-fill"))
+        p.setPen(QPen(theme.color("focus"), 2 * self.dpr, Qt.PenStyle.DashLine))
+        p.drawRect(box)
+
+    def select_object(self, pno, o):
+        self._obj, self._obj_drag = (pno, o), None
+        self.viewport().update()
+
     def _paint_object(self, p):
         pno, _o = self._obj
         box = self._doc_rect(pno, self._obj_rect())
+        self._place_bar(box)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(theme.color("focus"), 1.5 * self.dpr, Qt.PenStyle.DashLine))
         p.drawRect(box)
@@ -725,9 +798,12 @@ class PageView(QAbstractScrollArea):
             dx = min(max(q.x() - start.x(), -x0), pw - x1)
             dy = min(max(q.y() - start.y(), -y0), ph - y1)
             new = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+        elif QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:  # freely
+            nw, nh = max(abs(q.x() - anchor.x()), 4.0), max(abs(q.y() - anchor.y()), 4.0)
         else:  # the proportion of the picture is kept
             k = max(abs(q.x() - anchor.x()) / w, abs(q.y() - anchor.y()) / h, 8 / max(w, h))
             nw, nh = w * k, h * k
+        if mode != "move":
             nx = anchor.x() if q.x() >= anchor.x() else anchor.x() - nw
             ny = anchor.y() if q.y() >= anchor.y() else anchor.y() - nh
             new = (nx, ny, nx + nw, ny + nh)
@@ -1135,6 +1211,7 @@ class PageView(QAbstractScrollArea):
             self.objectDeleted.emit(*self._obj)
         elif k == Qt.Key.Key_Escape and self._obj:
             self._obj = self._obj_drag = None
+            self._hide_bar()
             self.viewport().update()
         elif k == Qt.Key.Key_Escape and self.tool != "select":
             self.toolDone.emit("cancel", self._page, None)

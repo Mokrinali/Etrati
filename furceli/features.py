@@ -816,15 +816,67 @@ class Features(EditEngine):
         n = (Rect(new) * page.derotation_matrix).normalize()
         if n.width < 2 or n.height < 2 or o.width < 1e-3 or o.height < 1e-3:
             raise EngineError("bad_op")
-        t = Matrix(info["transform"])
         to = (Matrix(1, 0, 0, 1, -o.x0, -o.y0) * Matrix(n.width / o.width, 0, 0, n.height / o.height, 0, 0)
               * Matrix(1, 0, 0, 1, n.x0, n.y0))
+        self._carry(info, sx, m, to)
+        return self._same(pno)
+
+    def _carry(self, info, sx, m, to):
+        """The picture drawn as before, then carried by `to` (page space, MuPDF's y down)."""
+        t = Matrix(info["transform"])
         local = Matrix(*map(float, m.group(1).split()))
         # MuPDF reports the picture with its top row first; PDF draws the unit square bottom up:
         # full = flip · local · outer.  Wanted: full · to  =>  local' = flip · full · to · full⁻¹ · flip · local
         flip = Matrix(1, 0, 0, -1, 0, 1)
         self._put_matrix(sx, m, flip * t * to * ~t * flip * local)
+
+    @staticmethod
+    def _turned(transform, page) -> int:
+        """Quarter turns of a picture as shown, clockwise in degrees (0, 90, 180, 270)."""
+        td = Matrix(transform) * page.rotation_matrix
+        return round(math.degrees(math.atan2(td.b, td.a)) / 90) * 90 % 360
+
+    def _op_image_turn(self, pno, xref, rect, degrees):
+        """A quarter turn (clockwise as shown when positive) around the picture's middle."""
+        if degrees % 90:
+            raise EngineError("bad_op")
+        _page, info, sx, m = self._image_site(pno, xref, rect)
+        c = Rect(info["bbox"])
+        cx, cy = (c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2
+        # a page's own turn is a turn too, so clockwise as shown is clockwise here (y down)
+        self._carry(info, sx, m, Matrix(1, 0, 0, 1, -cx, -cy) * Matrix(degrees)
+                    * Matrix(1, 0, 0, 1, cx, cy))
         return self._same(pno)
+
+    def _op_image_copy(self, pno, xref, rect, pages, anchor):
+        """The same picture, the same size, on other pages; its place measured from the same
+        point of each page (anchor: fractions of the width and height, (1, 0) = top right).
+        The file keeps the picture once; every page draws it on its own."""
+        page, info, _sx, _m = self._image_site(pno, xref, rect)
+        ax, ay = (min(max(float(v), 0.0), 1.0) for v in anchor)
+        x0, y0, x1, y1 = rect
+        w, h = x1 - x0, y1 - y0
+        turned = self._turned(info["transform"], page)
+        sw, sh = page.rect.width, page.rect.height  # as shown
+        page = None
+        ox, oy = x0 + ax * w - ax * sw, y0 + ay * h - ay * sh
+        done = []
+        for q in sorted({int(p) for p in pages} - {pno}):
+            if not 0 <= q < self.doc.page_count:
+                raise EngineError("bad_op")
+            tp = self.doc.load_page(q)
+            tw, th = tp.rect.width, tp.rect.height
+            nx = min(max(ax * tw + ox - ax * w, 0.0), max(tw - w, 0.0))
+            ny = min(max(ay * th + oy - ay * h, 0.0), max(th - h, 0.0))
+            target = Rect(nx, ny, nx + w, ny + h) * tp.derotation_matrix
+            try:
+                tp.insert_image(target, xref=xref, rotate=(tp.rotation - turned) % 360,
+                                keep_proportion=False)
+            except Exception:
+                raise EngineError("bad_image")
+            tp = None
+            done.append(q)
+        return self._same(*done)
 
     def _op_image_del(self, pno, xref, rect):
         _page, _info, sx, m = self._image_site(pno, xref, rect)
