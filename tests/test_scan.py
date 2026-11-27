@@ -98,6 +98,25 @@ def test_upright(page, q):
     assert scan.upright(scan.turn(img, q), "kat+eng") == (4 - q) % 4
 
 
+@pytest.mark.parametrize("k", [2, 5])
+def test_upside_down_photos_are_turned(k):
+    # Read upside down, these pages give about 58% plausible words: once enough to stop at.
+    p = list(bench.synthetic(k + 1))[k]
+    img, _, _ = bench.photograph(p[0], "flat", np.random.default_rng(7 * k + 2))
+    c = scan.find_sheet(img)
+    flat = scan.turn(scan.flatten(img, c) if c else img, 2)
+    assert scan.upright(flat, "kat+eng") == 2
+
+
+def test_dense_finds_the_writing():
+    ink = np.zeros((400, 300), np.uint8)
+    ink[300:360, 20:200] = 255
+    y0, y1, x0, x1 = scan._dense(ink, .1)
+    assert y0 <= .75 and y1 >= .9  # the rows of writing are inside
+    assert 20 / 300 <= x0 and x1 <= 200 / 300  # and no empty margin, as the writing is wider
+    assert scan._dense(ink, 1) == (0.0, 1.0, 0.0, 1.0)
+
+
 def test_upright_leaves_pictures_alone():
     assert scan.upright(np.full((600, 800, 3), 240, np.uint8), "kat+eng") == 0
     rnd = np.random.default_rng(2)

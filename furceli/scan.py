@@ -738,6 +738,22 @@ def _reads(img, languages):
     return good, good / max(sum(len(w[4]) for w in words), 1)
 
 
+def _dense(ink, part=.3):
+    """(y0, y1, x0, x1) as fractions: the window of about `part` of the page with most writing."""
+    cv2 = _cv()
+    h, w = ink.shape
+    if part >= 1 or min(h, w) < 40:
+        return 0.0, 1.0, 0.0, 1.0
+    wh, ww = max(int(h * math.sqrt(part)), 1), max(int(w * math.sqrt(part)), 1)
+    s = cv2.integral((ink > 0).astype(np.uint8))
+    step = max(min(h, w) // 60, 1)
+    ys, xs = np.arange(0, h - wh + 1, step), np.arange(0, w - ww + 1, step)
+    tot = (s[ys[:, None] + wh, xs[None, :] + ww] - s[ys[:, None], xs[None, :] + ww]
+           - s[ys[:, None] + wh, xs[None, :]] + s[ys[:, None], xs[None, :]])
+    i, j = np.unravel_index(int(np.argmax(tot)), tot.shape)
+    return ys[i] / h, (ys[i] + wh) / h, xs[j] / w, (xs[j] + ww) / w
+
+
 def upright(img, languages):
     """Quarter turns (clockwise) that put the writing upright."""
     cv2 = _cv()
@@ -754,14 +770,29 @@ def upright(img, languages):
     f = min(max(1500 / side, 1.0), 2.0) if side < 1500 else min(1700 / side, 1.0)
     probe = cv2.resize(enhance(img, "gray"), None, fx=f, fy=f,
                        interpolation=cv2.INTER_CUBIC if f > 1 else cv2.INTER_AREA)
-    scores, shares = {}, [0.0]
+    # Upside-down writing still reads as half-plausible words (about half of them), so the
+    # two ways of an axis are always compared, never one taken because it alone looks like
+    # text. First on a few lines (the part with the most writing): reading the wrong way
+    # round is slow, and a few lines usually settle it.
+    y0, y1, x0, x1 = _dense(ink, .1)
+    ph, pw = probe.shape[:2]
+    part = probe[int(y0 * ph):int(y1 * ph), int(x0 * pw):int(x1 * pw)]
+    shares = {}
+    for pair in (order[:2], order[2:]):
+        if pair[0] not in likely and shares and max(shares.values()) > .5:
+            break  # what looked likely does read
+        got = {q: _reads(turn(part, q), languages) for q in pair}
+        shares.update({q: got[q][1] for q in pair})
+        a, b = sorted(pair, key=lambda q: -got[q][0])
+        if got[a][0] >= 40 and got[a][1] > .7 and got[a][1] - got[b][1] > .2 \
+                and got[a][0] > 1.4 * got[b][0]:
+            return a
+    # not settled by a few lines: the whole page, every likely way
+    scores = {}
     for q in order:
-        if q not in likely and max(shares) > .5:  # what looked likely does read
+        if q not in likely and scores and max(shares.get(k, 0) for k in scores) > .5:
             break
-        scores[q], share = _reads(turn(probe, q), languages)
-        shares.append(share)
-        if scores[q] >= 80 and share > .55:  # reads like text: no need to try the others
-            return q
+        scores[q], shares[q] = _reads(turn(probe, q), languages)
     best = max(scores, key=lambda q: (scores[q], q == 0))
     # without a clear winner the picture stays as it is
     rest = max([v for q, v in scores.items() if q != best], default=0)
