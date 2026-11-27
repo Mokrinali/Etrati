@@ -2,6 +2,7 @@
 import difflib
 import io
 import os
+import re
 
 import numpy as np
 import pymupdf
@@ -599,3 +600,53 @@ def test_every_feature_keeps_encryption_and_replays(tmp_path):
     d = saved(a, tmp_path, "all.pdf", "u")
     assert d.was_locked and not holds(d, "ASECRET3")
     assert "ASECRET4" in d[4].get_text() and "SECRET3" not in d[3].get_text()
+
+
+def _tagged(path):
+    """A page whose words also live in marked-content dictionaries, as some exporters and OCR
+    tools write them: inline, in /Properties, and inside a form XObject."""
+    d = pymupdf.open()
+    p = d.new_page()
+    p.insert_text((72, 100), "Hello", fontsize=12)  # gives the page a font, /F...
+    font = re.search(r"/(\S+) 12 Tf", d.xref_stream(p.get_contents()[0]).decode()).group(1)
+    form = d.get_new_xref()
+    d.update_object(form, "<</Type/XObject/Subtype/Form/BBox[0 0 612 792]"
+                          f"/Resources<</Font<</{font} {d.xref_get_key(p.xref, 'Resources/Font/' + font)[1]}>>"
+                          "/Properties<</MC9<</ActualText(SECRETFORMPROP)>>>>>>>>")
+    d.update_stream(form, f"/Span<</ActualText(SECRETFORM)>>BDC BT /{font} 12 Tf 72 300 Td (Form) Tj ET EMC "
+                          f"/Span/MC9 BDC EMC".encode())
+    xo = d.get_new_xref()
+    d.update_object(xo, f"<</X1 {form} 0 R>>")
+    kind, res = d.xref_get_key(p.xref, "Resources")
+    at, pre = (int(res.split()[0]), "") if kind == "xref" else (p.xref, "Resources/")
+    d.xref_set_key(at, pre + "XObject", f"{xo} 0 R")
+    d.xref_set_key(at, pre + "Properties",
+                   "<</MC0<</ActualText(SECRETPROP)/Alt(SECRET\)ALT)/E(SECRETE)>>>>")
+    c = p.get_contents()[0]
+    d.update_stream(c, d.xref_stream(c) + (
+        f"\n/Span<</ActualText(SECRET\(INLINE\))/Alt<53454352455448>>>BDC BT /{font} 12 Tf "
+        f"72 200 Td (Name) Tj ET EMC\n/Span/MC0 BDC EMC\nq /X1 Do Q\n").encode())
+    d.save(str(path))
+    return str(path)
+
+
+def test_redaction_leaves_no_copy_in_marked_content(tmp_path):
+    # Fable's review: the glyphs went, the ActualText/Alt around them stayed in the file.
+    e = engine(_tagged(tmp_path / "t.pdf"))
+    e.apply(("redact", {0: [(60, 575, 200, 600), (60, 475, 200, 500)]}, {"fill": (0, 0, 0)}))
+    d = saved(e, tmp_path)
+    raw = b"".join(d.xref_stream(x) or b"" for x in range(1, d.xref_length())
+                   if d.xref_is_stream(x))
+    raw += b"".join(d.xref_object(x).encode() for x in range(1, d.xref_length()))
+    for secret in (b"SECRET", b"53454352455448"):
+        assert secret not in raw
+    assert "Hello" in d[0].get_text()  # what was not redacted stays
+
+
+def test_marked_content_strings_are_blanked_and_nothing_else():
+    from furceli.features import Features
+    src = (rb"/Span<</ActualText(a (nested) \) b)/Lang(ka)>>BDC "
+           rb"/P<</Alt<414243>/MCID 3>>BDC /E<</X 1>> (keep) Tj")
+    out = Features._blank_mc(src)
+    assert out == (rb"/Span<</ActualText()/Lang(ka)>>BDC "
+                   rb"/P<</Alt()/MCID 3>>BDC /E<</X 1>> (keep) Tj")

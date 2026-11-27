@@ -939,6 +939,73 @@ class Features(EditEngine):
         self._dropped = True
         return self._same(*marks)
 
+    MC_TEXT = re.compile(rb"/(?:ActualText|Alt|E)\s*([(<])")
+
+    @classmethod
+    def _blank_mc(cls, data: bytes) -> bytes:
+        """Every ActualText, Alt and E string of marked content made empty. They repeat the
+        words (for screen readers and search) and stay when the glyphs are redacted."""
+        out, i = [], 0
+        for m in cls.MC_TEXT.finditer(data):
+            start = m.start(1)
+            if start < i:
+                continue
+            if data[start:start + 1] == b"<":
+                if data[start + 1:start + 2] == b"<":
+                    continue  # a dictionary, not a hex string
+                end = data.find(b">", start)
+                if end < 0:
+                    break
+                end += 1
+            else:
+                depth, end = 0, start
+                while end < len(data):
+                    c = data[end:end + 1]
+                    if c == b"\\":
+                        end += 2
+                        continue
+                    depth += c == b"("
+                    depth -= c == b")"
+                    end += 1
+                    if depth == 0:
+                        break
+            out += [data[i:start], b"()"]
+            i = end
+        return b"".join(out) + data[i:]
+
+    def _scrub_marked(self, pno):
+        """On a redacted page: the words that marked content repeats, in the page's streams,
+        in its forms and in their /Properties."""
+        doc = self.doc
+        page = doc.load_page(pno)
+        streams = list(page.get_contents())
+        holders = [page.xref]
+        for x in page.get_xobjects():
+            if doc.xref_get_key(x[0], "Subtype")[1] == "/Form":
+                streams.append(x[0])
+                holders.append(x[0])
+        page = None
+        for x in streams:
+            data = doc.xref_stream(x)
+            new = self._blank_mc(data)
+            if new != data:
+                doc.update_stream(x, new)
+        for h in holders:
+            kind, res = doc.xref_get_key(h, "Resources")
+            at, pre = (int(res.split()[0]), "") if kind == "xref" else (h, "Resources/")
+            kind, props = doc.xref_get_key(at, pre + "Properties")
+            if kind == "xref":
+                at, pre, props = int(props.split()[0]), "", doc.xref_object(int(props.split()[0]))
+            elif kind == "dict":
+                pre += "Properties/"
+            else:
+                continue
+            for name, ref in re.findall(r"/([^\s/<>\[\]()]+)\s*(\d+ 0 R|<<)", props):
+                where, path = ((int(ref.split()[0]), "") if ref != "<<" else (at, pre + name + "/"))
+                for key in ("ActualText", "Alt", "E"):
+                    if doc.xref_get_key(where, path + key)[0] != "null":
+                        doc.xref_set_key(where, path + key, "null")
+
     def _redact_pages(self, src, marks, o):
         words = {o["word"]} if len(o.get("word") or "") >= 2 else set()
         for pno, rects in marks.items():
@@ -960,6 +1027,7 @@ class Features(EditEngine):
             else:
                 self._wipe(self.doc.load_page(pno), plan, o["fill"])
             page = None
+            self._scrub_marked(pno)
             page = self.doc.load_page(pno)
             shown = [r for c, r in self._glyphs(page)]
             fields = [w.rect for w in page.widgets()]
