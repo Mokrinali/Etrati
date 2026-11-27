@@ -21,7 +21,7 @@ import zlib
 import pymupdf
 from pymupdf import Matrix, Point, Quad, Rect
 
-from . import layers, legacy, measure, strokes
+from . import layers, legacy, measure, paths, strokes
 from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char, view_matrix
 
 PUNCT = ".,;:!?\"'()[]{}«»„“”‘’—–-…/\\"
@@ -826,11 +826,18 @@ class Features(EditEngine):
             src.close()
 
     def _try_strips(self, src, pno, chars, turn, own):
-        for along, across in ((.3, .08), (.15, .15), (.3, .25), (.05, .3), (.45, .02)):
+        tries = ((.3, .08), (.15, .15), (.3, .25), (.05, .3), (.45, .02))
+        if turn is None:  # slanted: a small square at the middle of each letter's box
+            tries = ((.12, 0), (.2, 0), (.3, 0), (.06, 0))
+        for along, across in tries:
             strips = []
             for c in chars:
                 r = Rect(c["bbox"])
-                if turn in (0, 180):
+                if turn is None:
+                    cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+                    half = max(min(r.width, r.height) * along, .05)
+                    strips.append(Rect(cx - half, cy - half, cx + half, cy + half))
+                elif turn in (0, 180):
                     mid, half = (r.y0 + r.y1) / 2, max(r.height * across, .05)
                     a, b = r.x0 + r.width * along, r.x1 - r.width * along
                     if b - a < .05:
@@ -1330,6 +1337,169 @@ class Features(EditEngine):
         page, chosen, turn = self._block(pno, lines, texts)
         page = None
         self._cut_block(pno, chosen, turn)
+        return self._same(pno)
+
+    # -- deleting anything with Delete (HANDOFF.md, item 9) ------------------------------
+    # A drawn shape is one painted path of the page's own commands (paths.parse); deleting it
+    # turns its painting operator into `n`, so nothing else changes: what lies inside or under
+    # it stays. A path in a form drawn more than once, or in a content stream another page
+    # shares, cannot go alone: deleting it would delete it everywhere.
+    def _drawn(self, page):
+        """Painted paths in drawing order, [{xref, start, end, fill, polys}] (polys in MuPDF's
+        page space, start/end: the painting operator in that stream), and the set of streams
+        that are drawn more than once."""
+        doc = self.doc
+        named = {}
+        try:
+            for x, name, invoker, _box in page.get_xobjects():
+                named[(invoker, name)] = x
+        except Exception:
+            pass
+        uses = {}
+
+        def follow(invoker, depth):
+            def on_do(name, ctm):
+                x = named.get((invoker, name))
+                if not x or depth > 8 or doc.xref_get_key(x, "Subtype")[1] != "/Form":
+                    return None
+                uses[x] = uses.get(x, 0) + 1
+                kind, mat = doc.xref_get_key(x, "Matrix")
+                m = tuple(float(v) for v in re.findall(r"[-+]?[\d.]+(?:[eE][-+]?\d+)?", mat)) \
+                    if kind == "array" else paths.IDENTITY
+                if len(m) != 6:
+                    m = paths.IDENTITY
+                return paths.parse(doc.xref_stream(x) or b"", paths.mul(m, ctm),
+                                   follow(x, depth + 1), tag=x)
+            return on_do
+
+        streams = page.get_contents()
+        parts, offsets, at = [], [], 0
+        for x in streams:
+            data = doc.xref_stream(x) or b""
+            offsets.append((at, x))
+            parts.append(data)
+            at += len(data) + 1
+        t = page.transformation_matrix
+        out = []
+        for tag, start, end, fill, polys, look in paths.parse(b"\n".join(parts), tuple(t), follow(0, 0)):
+            if tag is None:  # the page's own streams, read as one
+                base, x = next((o, x) for o, x in reversed(offsets) if o <= start)
+                start, end = start - base, end - base
+            else:
+                x = tag
+            out.append({"xref": x, "start": start, "end": end, "fill": fill, "polys": polys,
+                        "look": (fill,) + look})
+        shared = {x for x, n in uses.items() if n > 1}
+        mine = set(streams) | set(uses)
+        if out and mine:
+            for q in range(doc.page_count):
+                if q == page.number:
+                    continue
+                other = doc.load_page(q)
+                try:
+                    theirs = set(other.get_contents()) | {x for x, *_ in other.get_xobjects()}
+                except Exception:
+                    theirs = set(other.get_contents())
+                shared |= mine & theirs
+        return out, shared
+
+    @staticmethod
+    def _shown(page, polys):
+        rot = page.rotation_matrix
+        return [[(round((Point(p) * rot).x, 2), round((Point(p) * rot).y, 2)) for p in s] for s in polys]
+
+    def paths(self, pno):
+        """The page's drawn shapes as shown: [{id, rect, fill, segs, shared}]; segs are the
+        shape's lines (polylines), for finding what a click is on."""
+        page = self.doc.load_page(pno)
+        drawn, shared = self._drawn(page)
+        out, budget = [], 400_000  # points sent; beyond, shapes are found by their box
+        for i, d in enumerate(drawn):
+            segs = self._shown(page, d["polys"])
+            rect = paths.bbox(segs)
+            n = sum(len(s) for s in segs)
+            budget -= n
+            out.append({"id": i, "rect": rect, "fill": d["fill"],
+                        "segs": segs if budget >= 0 else [], "shared": d["xref"] in shared})
+        for o, g in zip(out, paths.groups([(o["rect"], d["look"]) for o, d in zip(out, drawn)])):
+            o["group"] = g
+        return out
+
+    def erasable(self, pno):
+        """Everything the objects tool may select and delete on a page."""
+        objs = self.objects(pno)
+        return {"paths": self.paths(pno), "lines": self.lines(pno),
+                "images": [o for o in objs if o["kind"] == "image"],
+                "dates": [o for o in objs if o["kind"] == "date"]}
+
+    def _chosen_paths(self, pno, chosen):
+        page = self.doc.load_page(pno)
+        drawn, shared = self._drawn(page)
+        picked = []
+        for pid, rect in chosen:
+            i = int(pid)
+            if not 0 <= i < len(drawn):
+                raise EngineError("stale")
+            got = paths.bbox(self._shown(page, drawn[i]["polys"]))
+            if any(abs(a - float(b)) > .6 for a, b in zip(got, rect)):
+                raise EngineError("stale")
+            picked.append((i, drawn[i], drawn[i]["xref"] in shared))
+        return picked
+
+    def _chosen_lines(self, pno, lines):
+        found = self._raw_lines(self.doc.load_page(pno))
+        chosen = []
+        for n, t in lines:
+            if not 0 <= int(n) < len(found) or self._line_text(found[int(n)]) != t:
+                raise EngineError("stale")
+            chosen.append(found[int(n)])
+        return chosen
+
+    def _line_groups(self, chosen):
+        groups = {}  # turn -> lines; None: slanted
+        for ln in chosen:
+            groups.setdefault(self._turn_of(ln), []).append(ln)
+        return groups
+
+    def erase_check(self, pno, chosen, lines=None):
+        """What of a selection cannot be deleted alone: {"blocked": path ids} and, when lines
+        are given, "lines_blocked": line numbers whose removal would take other text too."""
+        out = {"blocked": [i for i, _d, shared in self._chosen_paths(pno, chosen) if shared]}
+        if lines:
+            bad = []
+            for turn, group in self._line_groups(self._chosen_lines(pno, lines)).items():
+                chars = [c for ln in group for s in ln["spans"] for c in s["chars"]]
+                own = sum(1 for c in chars if not c["c"].isspace())
+                if self._line_strips(pno, chars, turn, own) is not None:
+                    continue
+                for ln in group:
+                    cs = [c for s in ln["spans"] for c in s["chars"]]
+                    if self._line_strips(pno, cs, turn, sum(1 for c in cs if not c["c"].isspace())) is None:
+                        bad.append(ln["n"])
+            out["lines_blocked"] = bad
+        return out
+
+    def _op_erase(self, pno, chosen, lines, images, dates):
+        """Delete drawn shapes [(id, rect)], text lines [(number, text)], pictures and dates
+        [(xref, rect)] of a page, each alone."""
+        if chosen:
+            edits = {}
+            for _i, d, shared in self._chosen_paths(pno, chosen):
+                if shared:
+                    raise EngineError("erase_shared")
+                edits.setdefault(d["xref"], []).append((d["start"], d["end"]))
+            for x, spans in edits.items():
+                data = self.doc.xref_stream(x)
+                for start, end in sorted(spans, reverse=True):
+                    data = data[:start] + b" n " + data[end:]
+                self.doc.update_stream(x, data)
+        if lines:
+            for turn, group in self._line_groups(self._chosen_lines(pno, lines)).items():
+                self._cut_block(pno, group, turn)
+        for xref, rect in images or ():
+            self._op_image_del(pno, xref, rect)
+        for xref, rect in dates or ():
+            self._op_date_del(pno, xref, rect)
         return self._same(pno)
 
     def _op_text_move(self, pno, lines, texts, old, new):

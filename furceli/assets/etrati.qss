@@ -133,3 +133,6 @@ QToolButton#anchor { border: 1px solid {line}; background: {surface-raised}; bor
 QToolButton#anchor:checked { border: 2px solid {brand}; background: {brand-soft}; }
 QFrame#objectBar QDoubleSpinBox { min-height: 26px; max-height: 28px; padding: 0 4px; }
 QFrame#objectBar QDoubleSpinBox::up-button, QFrame#objectBar QDoubleSpinBox::down-button { subcontrol-origin: border; width: 0px; border: 0; image: none; }
+QToolButton#eraseChip { border: 1px solid {line-strong}; border-radius: 6px; padding: 2px 8px; background: {surface-raised}; color: {ink-muted}; min-height: 22px; }
+QToolButton#eraseChip:checked { border-color: {brand}; background: {brand-soft}; color: {brand-text}; }
+QToolButton#eraseChip:disabled { color: {ink-disabled}; border-color: {line}; }

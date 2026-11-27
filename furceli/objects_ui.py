@@ -372,3 +372,54 @@ class DateDialog(QDialog):
         DateDialog.last = {"format": self._formats.checkedId(), "font": self.font.currentData(),
                            "size": float(self.size.value()), "color": self._colors.checkedId()}
         self.accept()
+
+
+class EraseBar(QFrame):
+    """Over several things chosen for deleting (design canvas "ETRATI: წაშლა Delete-ით"): how
+    many, which kinds stay chosen (lines, text, pictures), and delete."""
+
+    kinds = Signal(set)   # the kinds left on
+    delete = Signal()
+    NAMES = (("lines", "ხაზები"), ("text", "ნაწერი"), ("images", "სურათები"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("objectBar")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(6)
+        self.count = QLabel()
+        lay.addWidget(self.count)
+        lay.addWidget(ObjectBar._line())
+        self.chips = {}
+        for key, name in self.NAMES:
+            b = QToolButton()
+            b.setObjectName("eraseChip")
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.setToolTip(f"{name}: მონიშვნაში დატოვება ან ამოღება")
+            b.toggled.connect(self._toggled)
+            self.chips[key] = (b, name)
+            lay.addWidget(b)
+        lay.addWidget(ObjectBar._line())
+        self.del_btn = QPushButton("წაშლა · Delete")
+        self.del_btn.setIcon(theme.icon("delete"))
+        theme.variant(self.del_btn, "danger")
+        self.del_btn.clicked.connect(self.delete.emit)
+        lay.addWidget(self.del_btn)
+        self.hide()
+
+    def _toggled(self):
+        self.kinds.emit({k for k, (b, _n) in self.chips.items() if b.isChecked()})
+
+    def show_counts(self, chosen, found, on):
+        """chosen and found: {kind: n}; on: the kinds left on."""
+        self.count.setText(f"მონიშნულია {sum(chosen.values())}")
+        for key, (b, name) in self.chips.items():
+            n, all_ = chosen.get(key, 0), found.get(key, 0)
+            b.blockSignals(True)
+            b.setChecked(key in on)
+            b.blockSignals(False)
+            b.setText(f"{name} {n}" if n == all_ or key not in on else f"{name} {n} / {all_}")
+            b.setEnabled(all_ > 0)
+        self.del_btn.setEnabled(sum(chosen.values()) > 0)

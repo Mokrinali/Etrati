@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, Q
                                QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressDialog,
                                QPushButton, QVBoxLayout, QWidget)
 
-from . import APP_NAME, files
+from . import APP_NAME, files, theme
 from .client import P_TEXT, TaskError, run_task
 from .dialogs import PDF_FILTER, error_text, warn_unprotected
 from .forms import (ChoicesDialog, CompareDialog, CompressDialog, FieldDialog, HeaderDialog,
@@ -131,9 +131,9 @@ class ToolsMixin:
         if name in self.MEASURE_KINDS:
             self._measuring_started()
         if name == "object":
-            self.status.emit("დააწკაპუნეთ სურათზე, თარიღზე ან ტექსტზე: გადათრევა — გადატანა, "
-                             "კუთხე — ზომა (Shift — თავისუფლად), Delete — წაშლა, მარჯვენა ღილაკი — "
-                             "სხვა მოქმედებები. Ctrl+V — სურათის ჩასმა ბუფერიდან")
+            self.status.emit("დაწკაპუნება — მონიშვნა (სურათს, თარიღს, ტექსტს გადაათრევთ) · ჩარჩო → "
+                             "მთლიანად შიგნით · ← რასაც ეხება · Shift+დაწკაპუნება — დამატება ან "
+                             "მოხსნა · Delete — წაშლა · Ctrl+Z — დაბრუნება · Esc — მონიშვნის მოხსნა")
         self.changed.emit()
 
     def load_comments(self):
@@ -323,6 +323,49 @@ class ToolsMixin:
     # -- pictures already on the page (HANDOFF.md, item 7) -----------------
     def _load_objects(self, v, pno):
         v.objects[pno] = self._quiet("objects", pno) or []
+
+    # -- deleting anything with Delete (HANDOFF.md, item 9) ------------------------
+    def _load_erasables(self, v, pno):
+        from . import erase_pick
+        got = self._quiet("erasable", pno)
+        v.erasables[pno] = erase_pick.items(got) if got else []
+
+    def _erase_wanted(self, pno, chosen):
+        """Delete what was chosen; what cannot go alone is shown and asked about first."""
+        from . import erase_pick
+        op = erase_pick.operation(pno, chosen)
+        check = self._quiet("erase_check", pno, op[2], op[3]) or {}
+        blocked_ids = set(check.get("blocked", ()))
+        blocked_lines = set(check.get("lines_blocked", ()))
+        blocked = [it for it in chosen
+                   if (it["kind"] == "path" and any(i in blocked_ids for i, _r in it["ids"]))
+                   or (it["kind"] == "text" and it["line"][0] in blocked_lines)]
+        if blocked:
+            v = self.view
+            if v._erase:
+                v._erase["blocked"] = blocked
+                v.viewport().update()
+            rest = [it for it in chosen if not any(it is b for b in blocked)]
+            box = QMessageBox(QMessageBox.Icon.Warning, "წაშლა",
+                              f"მონიშნულიდან {len(blocked)} ცალკე ვერ წაიშლება (ნარინჯისფრად).",
+                              parent=self)
+            box.setInformativeText(
+                "ნახაზის ნაწილი ფაილში რამდენიმე ადგილას იხატება, ან ნაწერის ამოჭრა მეზობელ "
+                "ნაწერსაც წაშლიდა. ETRATI ასეთს ჩუმად არ შლის."
+                + ("\n\nდანარჩენის წაშლა შეიძლება." if rest else ""))
+            cancel = box.addButton("გაუქმება", QMessageBox.ButtonRole.RejectRole)
+            go = box.addButton("წაშალე დანარჩენი", QMessageBox.ButtonRole.AcceptRole) if rest else None
+            if go is not None:
+                theme.variant(go, "primary")
+            box.setDefaultButton(cancel)
+            box.exec()
+            if v._erase:
+                v._erase.pop("blocked", None)
+                v.viewport().update()
+            if go is None or box.clickedButton() is not go:
+                return
+            op = erase_pick.operation(pno, rest)
+        self.edit(op)
 
     @staticmethod
     def _kind(o):

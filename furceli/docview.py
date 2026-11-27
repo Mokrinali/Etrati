@@ -135,6 +135,8 @@ class DocView(ToolsMixin, QWidget):
         v.objectTurned.connect(mine(lambda *a: self._object_turned(*a)))
         v.objectCopy.connect(mine(lambda *a: self._object_copy(*a)))
         v.snapsWanted.connect(lambda p: self._load_snaps(v, p))
+        v.erasablesWanted.connect(lambda p: self._load_erasables(v, p))
+        v.eraseWanted.connect(mine(lambda *a: self._erase_wanted(*a)))
         v.uriActivated.connect(self._open_uri)
         v.pageChanged.connect(lambda p: v is self._active and (
             self._page_changed(p), self.pageChanged.emit(p)))

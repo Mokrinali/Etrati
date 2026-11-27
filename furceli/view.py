@@ -82,6 +82,8 @@ class PageView(QAbstractScrollArea):
     objectTurned = Signal(int, object, int)      # page, picture, degrees clockwise as shown
     objectCopy = Signal(int, object)             # page, picture: "on other pages too…"
     snapsWanted = Signal(int)          # page whose lines measuring may snap to
+    erasablesWanted = Signal(int)      # page whose shapes, lines and pictures may be deleted
+    eraseWanted = Signal(int, object)  # page, [items] chosen for deleting (erase_pick)
 
     marks, hits, current_hit = _shared("marks"), _shared("hits"), _shared("current_hit")
     diff, frames = _shared("diff"), _shared("frames")
@@ -121,6 +123,9 @@ class PageView(QAbstractScrollArea):
         self.widgets: dict[int, list] = {}
         self.objects: dict[int, list] = {}  # pictures of pages, for the "objects" tool
         self._obj = None                   # (page, picture) chosen with the "objects" tool
+        self.erasables: dict = {}          # page -> erase_pick items ([] while loading)
+        self._erase = None                 # several things chosen for deleting (see _erase_set)
+        self._band = None                  # [page, start, end, adding] (page points)
         self._obj_drag = None              # [mode, start point, anchor, rect being shown]
         self._drop = None                  # (page, rect): where a dragged picture would go
         self._measure = None               # [page, [points], cursor]: a measurement being drawn
@@ -184,6 +189,8 @@ class PageView(QAbstractScrollArea):
         self._sel_a = self._sel_b = None
         self._shape = None
         self.objects, self._obj, self._obj_drag = {}, None, None
+        self.erasables, self._erase, self._band = {}, None, None
+        self._hide_erase_bar()
         self._measure, self.measure_scales = None, {}
         self.snaps, self._snap, self._hover = {}, None, None
         self._hide_bar()
@@ -584,7 +591,7 @@ class PageView(QAbstractScrollArea):
         p.scale(1 / self.dpr, 1 / self.dpr)
         o = self._origin()
         p.translate(-o.x(), -o.y())
-        drew_object = False
+        drew_object = drew_erase = False
         for pno in self._visible_pages():
             r = self.rects[pno]
             p.fillRect(r, theme.color("paper"))
@@ -634,6 +641,9 @@ class PageView(QAbstractScrollArea):
             if self._obj and self._obj[0] == pno:
                 self._paint_object(p)
                 drew_object = True
+            if (self._erase and self._erase["pno"] == pno) or (self._band and self._band[0] == pno):
+                self._paint_erase(p, pno)
+                drew_erase = True
             if self._drop and self._drop[0] == pno:
                 self._paint_drop(p)
             if self._measure and self._measure[0] == pno:
@@ -658,6 +668,8 @@ class PageView(QAbstractScrollArea):
             p.drawRect(r.adjusted(-1, -1, 0, 0))
         if not drew_object:  # its page scrolled away: the bar goes with it
             self._hide_bar()
+        if not drew_erase:
+            self._hide_erase_bar()
 
     # -- tools -------------------------------------------------------------
     BOX_TOOLS = {"text", "rect", "ellipse", "stamp", "image", "redact", "field", "signbox",
@@ -670,7 +682,9 @@ class PageView(QAbstractScrollArea):
         self.cancel_crop()
         self.tool, self._shape, self._measure = name, None, None
         self._obj = self._obj_drag = None
+        self._erase = self._band = None
         self._hide_bar()
+        self._hide_erase_bar()
         cursor = {"select": Qt.CursorShape.ArrowCursor, "edit": Qt.CursorShape.IBeamCursor,
                   "highlight": Qt.CursorShape.IBeamCursor,
                   "underline": Qt.CursorShape.IBeamCursor,
@@ -918,6 +932,15 @@ class PageView(QAbstractScrollArea):
         pno = self._nearest_page(pt)
         dp = pt + QPointF(self._origin())
         q = self.doc_to_page(pno, dp)
+        on_corner = bool(self._obj and self._obj[0] == pno and self._corner_at(pno, dp) is not None)
+        if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier and not on_corner:
+            # (Shift on a corner handle resizes freely, as before)
+            if pno not in self.objects:
+                self.objects[pno] = []
+                self.objectsWanted.emit(pno)
+            self._need_erasables(pno)
+            self._erase_shift(pno, q)
+            return
         if self._obj and self._obj[0] == pno:
             corner = self._corner_at(pno, dp)
             if corner is not None:  # resizing: the opposite corner stays where it is
@@ -933,7 +956,186 @@ class PageView(QAbstractScrollArea):
         o = self.object_at(pno, q)
         self._obj = (pno, o) if o else None
         self._obj_drag = ["move", q, None, tuple(o["rect"])] if o else None
+        self._erase = None
+        if o is None:
+            from . import erase_pick
+            self._need_erasables(pno)
+            it = erase_pick.hit(self.erasables.get(pno, ()), q.x(), q.y(), self._erase_tol(),
+                                self._shown_size(pno))
+            if it is not None:
+                self._erase_set(pno, [it])
+            else:  # on empty paper: a box is drawn
+                self._band = [pno, q, q, False]
         self.viewport().update()
+
+    # -- several things chosen for deleting (HANDOFF.md, item 9) -----------------------
+    ERASE_PIXELS = 5  # how near a line a click must be, on the screen
+
+    def _need_erasables(self, pno):
+        """Read once a page (and after edits); not on a click that moves a picture."""
+        if pno not in self.erasables:
+            self.erasables[pno] = []  # marked first: no second load meanwhile
+            self.erasablesWanted.emit(pno)
+
+    def _erase_tol(self):
+        return self.ERASE_PIXELS * self.dpr / self.scale
+
+    def _shown_size(self, pno):
+        w, h = self.sizes[pno]
+        return (w, h)
+
+    def _erase_set(self, pno, found, off=(), on=None):
+        """found: what a click or box took; off: those taken out with Shift (shown, kept);
+        on: the kinds left on by the bar's filters."""
+        self._erase = {"pno": pno, "found": list(found), "off": list(off),
+                       "on": set(on) if on is not None else {"lines", "text", "images"}}
+        self._obj = None
+        self._hide_bar()
+
+    def erase_chosen(self):
+        """What Delete deletes now: found, less what was taken out, of the kinds left on."""
+        e = self._erase
+        if not e:
+            return []
+        from . import erase_pick
+        return [it for it in erase_pick.only(e["found"], e["on"])
+                if not any(it is o for o in e["off"])]
+
+    def _items_of_object(self, pno, o):
+        """The deletable items a picture, date or block of text of the objects tool stands for."""
+        items = self.erasables.get(pno, ())
+        if o.get("kind") == "text":
+            lines = set(o.get("lines", ()))
+            return [it for it in items if it["kind"] == "text" and it["line"][0] in lines]
+        return [it for it in items if it["kind"] in ("image", "date") and it["ref"][0] == o.get("xref")
+                and all(abs(a - b) < 1 for a, b in zip(it["rect"], o["rect"]))]
+
+    def _erase_shift(self, pno, q):
+        """Shift: a click adds a thing or takes it out; on empty paper, a box that adds."""
+        from . import erase_pick
+        e = self._erase if self._erase and self._erase["pno"] == pno else None
+        if e is None:
+            found = self._items_of_object(pno, self._obj[1]) if self._obj and self._obj[0] == pno else []
+            self._erase_set(pno, found)
+            e = self._erase
+        it = erase_pick.hit(self.erasables.get(pno, ()), q.x(), q.y(), self._erase_tol(),
+                            self._shown_size(pno))
+        if it is None:
+            self._band = [pno, q, q, True]
+        elif any(it is o for o in e["off"]):
+            e["off"] = [o for o in e["off"] if o is not it]
+        elif any(it is o for o in e["found"]):
+            e["off"].append(it)
+        else:
+            e["found"].append(it)
+        self.viewport().update()
+
+    def _band_release(self):
+        from . import erase_pick
+        pno, a, b, adding = self._band
+        self._band = None
+        start, end = self.page_to_doc(pno, a), self.page_to_doc(pno, b)  # as seen now
+        if abs(end.x() - start.x()) < 4 * self.dpr and abs(end.y() - start.y()) < 4 * self.dpr:
+            if not adding:  # a click on empty paper: nothing chosen
+                self._erase = None
+            self.viewport().update()
+            return
+        crossing = end.x() < start.x()  # right to left, as seen: what it touches too
+        got = erase_pick.in_box(self.erasables.get(pno, ()), (a.x(), a.y(), b.x(), b.y()), crossing)
+        if adding and self._erase and self._erase["pno"] == pno:
+            e = self._erase
+            for it in got:
+                if not any(it is o for o in e["found"]):
+                    e["found"].append(it)
+                e["off"] = [o for o in e["off"] if o is not it]
+        else:
+            self._erase_set(pno, got)
+        if not self.erase_chosen() and not adding:
+            self._erase = None
+        self.viewport().update()
+
+    def _erase_bar(self):
+        bar = getattr(self, "_erase_bar_w", None)
+        if bar is None:
+            from .objects_ui import EraseBar
+            bar = self._erase_bar_w = EraseBar(self.viewport())
+            bar.kinds.connect(self._erase_kinds)
+            bar.delete.connect(self._erase_now)
+        return bar
+
+    def _erase_kinds(self, kinds):
+        if self._erase:
+            self._erase["on"] = set(kinds)
+            self.viewport().update()
+
+    def _erase_now(self):
+        chosen = self.erase_chosen()
+        if chosen:
+            self.eraseWanted.emit(self._erase["pno"], chosen)
+
+    def _hide_erase_bar(self):
+        bar = getattr(self, "_erase_bar_w", None)
+        if bar is not None and bar.isVisible():
+            bar.hide()
+
+    def _paint_erase(self, p, pno):
+        from . import erase_pick
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        e = self._erase if self._erase and self._erase["pno"] == pno else None
+        if e:
+            chosen = self.erase_chosen()
+            points = sum(len(s) for it in chosen if it["kind"] == "path" for s in it["segs"])
+            red = QPen(theme.color("mark-redact"), 2 * self.dpr)
+            for it in chosen:
+                if it["kind"] == "path" and it["segs"] and not it["hatch"] and points <= 20000:
+                    p.setPen(red)
+                    for seg in it["segs"]:
+                        p.drawPolyline([self.page_to_doc(pno, QPointF(x, y)) for x, y in seg])
+                else:
+                    p.setPen(red)
+                    p.drawRect(self._doc_rect(pno, it["rect"]).adjusted(-2, -2, 2, 2))
+            warn = QPen(theme.color("warning"), 3 * self.dpr)
+            for it in e.get("blocked", ()):
+                p.setPen(warn)
+                p.drawRect(self._doc_rect(pno, it["rect"]).adjusted(-3, -3, 3, 3))
+            gone = [it for it in e["found"] if not any(it is c for c in chosen)]
+            p.setPen(QPen(theme.color("line-strong"), 1.5 * self.dpr, Qt.PenStyle.DashLine))
+            for it in gone:
+                p.drawRect(self._doc_rect(pno, it["rect"]).adjusted(-2, -2, 2, 2))
+            if chosen and not self._band:
+                box = self._doc_rect(pno, _union([it["rect"] for it in chosen]))
+                bar = self._erase_bar()
+                bar.show_counts(erase_pick.counts(chosen), erase_pick.counts(e["found"]), e["on"])
+                self._place_erase_bar(bar, box)
+            else:
+                self._hide_erase_bar()
+        if self._band and self._band[0] == pno:
+            _pno, a, b, _adding = self._band
+            box = QRectF(self.page_to_doc(pno, a), self.page_to_doc(pno, b)).normalized()
+            crossing = self.page_to_doc(pno, b).x() < self.page_to_doc(pno, a).x()
+            color = theme.color("mark-diff-new" if crossing else "focus")
+            fill = QColor(color)
+            fill.setAlpha(20)
+            p.fillRect(box, fill)
+            p.setPen(QPen(color, 1.5 * self.dpr, Qt.PenStyle.DashLine if crossing else Qt.PenStyle.SolidLine))
+            p.drawRect(box)
+        p.restore()
+
+    def _place_erase_bar(self, bar, box):
+        bar.adjustSize()
+        o = QPointF(self._origin())
+        left, top, bottom = ((box.left() - o.x()) / self.dpr, (box.top() - o.y()) / self.dpr,
+                             (box.bottom() - o.y()) / self.dpr)
+        vw, vh = self.viewport().width(), self.viewport().height()
+        y = top - bar.height() - 10 if top - bar.height() - 10 >= 4 else bottom + 10
+        x = min(max(left, 4), max(vw - bar.width() - 4, 4))
+        pos = QPoint(round(x), round(min(max(y, 4), max(vh - bar.height() - 4, 4))))
+        if bar.pos() != pos:
+            bar.move(pos)
+        if not bar.isVisible():
+            bar.show()
 
     def _object_drag(self, pt):
         pno, o = self._obj
@@ -1195,6 +1397,10 @@ class PageView(QAbstractScrollArea):
         if self._obj_drag and e.buttons() & Qt.MouseButton.LeftButton:
             self._object_drag(pt)
             return
+        if self._band and e.buttons() & Qt.MouseButton.LeftButton:
+            self._band[2] = self._clamp(self._band[0], self.doc_to_page(self._band[0], pt + QPointF(self._origin())))
+            self.viewport().update()
+            return
         if self._measure:
             self._measure[2] = self._measure_point(self._measure[0], pt)
             self._hover = (self._measure[0], self._measure[2])
@@ -1270,6 +1476,9 @@ class PageView(QAbstractScrollArea):
             return
         if self._obj_drag:
             self._object_release()
+            return
+        if self._band:
+            self._band_release()
             return
         if getattr(self, "_press_widget", None):
             w, self._press_widget = self._press_widget, None
@@ -1383,6 +1592,12 @@ class PageView(QAbstractScrollArea):
         elif self._measure and k == Qt.Key.Key_Escape:
             self._measure = None
             self.viewport().update()
+        elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._erase and self.erase_chosen():
+            self._erase_now()
+        elif k == Qt.Key.Key_Escape and (self._erase or self._band):
+            self._erase = self._band = None
+            self._hide_erase_bar()
+            self.viewport().update()
         elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._obj and not self._obj_drag:
             self.objectDeleted.emit(*self._obj)
         elif k == Qt.Key.Key_Escape and self._obj:
@@ -1408,3 +1623,8 @@ class PageView(QAbstractScrollArea):
 
     def scrollContentsBy(self, dx, dy):
         self.viewport().update()
+
+
+def _union(rects):
+    return (min(r[0] for r in rects), min(r[1] for r in rects),
+            max(r[2] for r in rects), max(r[3] for r in rects))
