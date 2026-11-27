@@ -123,9 +123,9 @@ class ToolsMixin:
         for v in self.views:  # the pen is one for every pane
             v.set_tool(name)
         if name == "object":
-            self.status.emit("დააწკაპუნეთ სურათზე: გადათრევა — გადატანა, კუთხე — ზომა პროპორციით "
-                             "(Shift — თავისუფლად), Delete — წაშლა, მარჯვენა ღილაკი — ჩანაცვლება. "
-                             "Ctrl+V — სურათის ჩასმა ბუფერიდან")
+            self.status.emit("დააწკაპუნეთ სურათზე, თარიღზე ან ტექსტზე: გადათრევა — გადატანა, "
+                             "კუთხე — ზომა (Shift — თავისუფლად), Delete — წაშლა, მარჯვენა ღილაკი — "
+                             "სხვა მოქმედებები. Ctrl+V — სურათის ჩასმა ბუფერიდან")
         self.changed.emit()
 
     def load_comments(self):
@@ -309,17 +309,23 @@ class ToolsMixin:
 
     @staticmethod
     def _kind(o):
-        return "date" if o.get("kind") == "date" else "image"
+        return o.get("kind") if o.get("kind") in ("date", "text") else "image"
 
     _pick_object = None   # (page, rectangle): chosen again once the edit is shown
     _ask_copy = False     # a picture just put in: ask about the other pages
 
     def _object_moved(self, pno, o, rect):
         self._pick_object = (pno, tuple(rect))
+        if self._kind(o) == "text":  # written again: its box may grow by a point or two
+            x0, y0, x1, y1 = rect
+            self._pick_object = (pno, (x0 - 6, y0 - 6, x1 + 40, y1 + 6))
+            self.edit(("text_move", pno, list(o["lines"]), list(o["texts"]), tuple(o["rect"]),
+                       tuple(rect)))
+            return
         self.edit((self._kind(o) + "_move", pno, o["xref"], tuple(o["rect"]), tuple(rect)))
 
     def _object_turned(self, pno, o, degrees):
-        if self._kind(o) == "date":
+        if self._kind(o) != "image":
             return
         x0, y0, x1, y1 = o["rect"]
         cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
@@ -327,6 +333,8 @@ class ToolsMixin:
         self.edit(("image_turn", pno, o["xref"], tuple(o["rect"]), degrees))
 
     def _object_copy(self, pno, o):
+        if self._kind(o) == "text":
+            return
         from .objects_ui import CopyDialog
         w, h = self.sizes[pno]
         x0, y0, x1, y1 = o["rect"]
@@ -394,6 +402,9 @@ class ToolsMixin:
         return self._add_image(pno, rect, path)
 
     def _object_deleted(self, pno, o):
+        if self._kind(o) == "text":
+            self.edit(("text_del", pno, list(o["lines"]), list(o["texts"])))
+            return
         self.edit((self._kind(o) + "_del", pno, o["xref"], tuple(o["rect"])))
 
     def _object_swap(self, pno, o):
@@ -429,9 +440,13 @@ class ToolsMixin:
             if pno not in self.view.objects:
                 self._load_objects(self.view, pno)
             o = self.view.object_at(pno, q)
-            if o:
+            if o and self._kind(o) == "image":
                 menu.addAction("სურათის ჩანაცვლება…", lambda: self._object_swap(pno, o))
                 menu.addAction("სურათის წაშლა", lambda: self._object_deleted(pno, o))
+                menu.addSeparator()
+            elif o:
+                menu.addAction("თარიღის წაშლა" if self._kind(o) == "date" else "ტექსტის წაშლა",
+                               lambda: self._object_deleted(pno, o))
                 menu.addSeparator()
         if self.view.has_selection():
             menu.addAction("კოპირება", self.copy)

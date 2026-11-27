@@ -892,13 +892,106 @@ class Features(EditEngine):
         return found[0] if len(found) == 1 else None
 
     def objects(self, pno):
-        """What the "objects" tool may take on a page: pictures and dates."""
-        out = [dict(o, kind="image") for o in self.images(pno)]
+        """What the "objects" tool may take on a page: blocks of text first (pictures and
+        dates over them are found first, as the tool looks from the top), pictures, dates."""
         page = self.doc.load_page(pno)
-        for x, name, r in self._dates_drawn(page):
-            out.append({"xref": x, "rect": r, "kind": "date",
-                        "movable": self._date_do(page, name) is not None})
+        dates = [{"xref": x, "rect": r, "kind": "date",
+                  "movable": self._date_do(page, name) is not None}
+                 for x, name, r in self._dates_drawn(page)]
+        out = [dict(b, kind="text", xref=0) for b in self._text_blocks(page)
+               if not any(Rect(b["rect"]).intersects(Rect(d["rect"])) for d in dates)]
+        page = None
+        return out + [dict(o, kind="image") for o in self.images(pno)] + dates
+
+    # -- blocks of text (HANDOFF.md, item 7) ------------------------------------
+    # A block is taken out glyph by glyph (the strips of "replace", proven on a copy not to
+    # touch anything else) and written again with the closest Windows font, at its size,
+    # colour and weight: the original font holds only the letters it used.
+    TURNS = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
+
+    def _turn_of(self, ln):
+        return self.TURNS.get((round(ln["dir"][0], 2), round(ln["dir"][1], 2)))
+
+    def _text_blocks(self, page):
+        """[{lines, texts, rect, movable}] numbered as `_raw_lines` numbers lines."""
+        raw = page.get_text("rawdict", flags=self._flags(page))
+        out, n = [], 0
+        for block in raw["blocks"]:
+            lines = []
+            for ln in block.get("lines", ()):
+                if ln["spans"]:
+                    ln["n"] = n
+                    n += 1
+                    if self._line_text(ln).strip():
+                        lines.append(ln)
+            if not lines:
+                continue
+            r = Rect(lines[0]["bbox"])
+            for ln in lines[1:]:
+                r |= Rect(ln["bbox"])
+            turns = {self._turn_of(ln) for ln in lines}
+            out.append({"lines": [ln["n"] for ln in lines],
+                        "texts": [self._line_text(ln) for ln in lines],
+                        "rect": tuple(round(v, 3) for v in (r * page.rotation_matrix).normalize()),
+                        "movable": len(turns) == 1 and None not in turns})
         return out
+
+    def _block(self, pno, lines, texts):
+        page = self.doc.load_page(pno)
+        found = self._raw_lines(page)
+        if not lines or len(lines) != len(texts):
+            raise EngineError("stale")
+        chosen = []
+        for n, t in zip(lines, texts):
+            if not 0 <= int(n) < len(found) or self._line_text(found[int(n)]) != t:
+                raise EngineError("stale")
+            chosen.append(found[int(n)])
+        turns = {self._turn_of(ln) for ln in chosen}
+        if len(turns) != 1 or None in turns:
+            raise EngineError("slanted")
+        return page, chosen, turns.pop()
+
+    def _cut_block(self, pno, chosen, turn):
+        chars = [c for ln in chosen for s in ln["spans"] for c in s["chars"]]
+        own = sum(1 for c in chars if not c["c"].isspace())
+        strips = self._line_strips(pno, chars, turn, own)
+        if strips is None:
+            raise EngineError("replace_collateral")
+        return self._remove_strips(self.doc, pno, strips)
+
+    def _op_text_del(self, pno, lines, texts):
+        page, chosen, turn = self._block(pno, lines, texts)
+        page = None
+        self._cut_block(pno, chosen, turn)
+        return self._same(pno)
+
+    def _op_text_move(self, pno, lines, texts, old, new):
+        """The block from `old` to `new` (as shown); a bigger box writes bigger letters."""
+        page, chosen, turn = self._block(pno, lines, texts)
+        o, n = Rect(old).normalize(), Rect(new).normalize()
+        if o.width < .5 or n.width < .5:
+            raise EngineError("bad_op")
+        k = n.width / o.width
+        rot = page.rotation_matrix
+        put = []
+        for ln in chosen:
+            s = ln["spans"][0]
+            c = s["color"]
+            at = Point(ln["spans"][0]["chars"][0]["origin"]) * rot
+            put.append((self._line_text(ln), at, {
+                "size": s["size"] * k,
+                "color": ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255),
+                "bold": bool(s["flags"] & 16) or "bold" in s["font"].lower(),
+                "italic": bool(s["flags"] & 2), "serif": bool(s["flags"] & 4),
+                "mono": bool(s["flags"] & 8)}))
+        page = None
+        page = self._cut_block(pno, chosen, turn)
+        for text, at, st in put:
+            kind = _Type(page, text, serif=st["serif"], mono=st["mono"], bold=st["bold"],
+                         italic=st["italic"])
+            where = Point(n.x0 + (at.x - o.x0) * k, n.y0 + (at.y - o.y0) * k)
+            kind.put(where, text, st["size"], st["color"], rotate=turn)
+        return self._same(pno)
 
     def _date_site(self, pno, xref, rect):
         page = self.doc.load_page(pno)

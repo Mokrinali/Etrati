@@ -85,8 +85,11 @@ class ObjectBar(QFrame):
         return f
 
     def set_kind(self, kind):
+        """A picture has it all; a date no size or turn; a block of text only delete (it is
+        moved and enlarged with the mouse)."""
         for w in self._sizing:
-            w.setVisible(kind != "date")
+            w.setVisible(kind == "image")
+        self.copy_btn.setVisible(kind != "text")
 
     def show_size(self, w_pt, h_pt):
         self._ratio = h_pt / w_pt if w_pt else 1.0
