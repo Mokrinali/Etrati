@@ -10,7 +10,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFon
                            QPainter, QPalette, QPixmap)
 from PySide6.QtWidgets import (QColorDialog, QComboBox, QFileDialog, QFormLayout, QInputDialog, QDialog, QDialogButtonBox,
                                QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QPushButton, QSpinBox, QStackedWidget, QTabWidget, QToolBar,
+                               QProgressDialog, QPushButton, QSpinBox, QStackedWidget, QTabWidget, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import APP_NAME, DATA_ID, __version__, files, theme
@@ -946,14 +946,92 @@ class MainWindow(QMainWindow):
     def _update_result(self, result, manual):
         from . import __version__, updates
         if result and updates.newer(result["version"]):
-            self.update_banner.show_message(
-                "info", f"ხელმისაწვდომია ETRATI-ის ახალი ვერსია {result['version']} "
-                        f"(თქვენი ვერსია: {__version__}).",
-                "ჩამოტვირთვა…", lambda url=result["url"]: updates.open_page(url))
+            text = (f"ხელმისაწვდომია ETRATI-ის ახალი ვერსია {result['version']} "
+                    f"(თქვენი ვერსია: {__version__}).")
+            if updates.can_install(result):
+                self.update_banner.show_message(
+                    "info", text, "განახლება…", lambda r=result: self.start_update(r))
+            else:
+                self.update_banner.show_message(
+                    "info", text, "ჩამოტვირთვა…", lambda url=result["url"]: updates.open_page(url))
         elif manual:
             text = (f"თქვენ უახლესი ვერსია გაქვთ ({__version__})." if result else
                     "შემოწმება ვერ მოხერხდა. შეამოწმეთ ინტერნეტთან კავშირი და სცადეთ მოგვიანებით.")
             QMessageBox.information(self, "განახლება", text)
+
+    def _confirm_update(self, result) -> bool:
+        mb = max(1, round((result.get("size") or 0) / 1e6))
+        box = QMessageBox(QMessageBox.Icon.Question, "განახლება",
+                          f"ჩამოვტვირთო და დავაყენო ETRATI {result['version']}?", parent=self)
+        box.setInformativeText(
+            f"ჩამოსატვირთია დაახლოებით {mb} მბ. დასაყენებლად ETRATI დაიხურება და თავიდან "
+            "გაიხსნება; შეუნახავ ცვლილებებზე ჩვეულებისამებრ გკითხავთ. ძველი ვერსია "
+            "ადგილზე რჩება, თუ დაყენება ვერ მოხერხდა.")
+        yes = box.addButton("განახლება", QMessageBox.ButtonRole.AcceptRole)
+        theme.variant(yes, "primary")
+        box.addButton("გაუქმება", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def start_update(self, result):
+        """Only after the person agrees: download, then close and let the new program install."""
+        from . import updates
+        if not self._confirm_update(result):
+            return
+        total = max(1, (result.get("size") or 0) // 1024)
+        bar = QProgressDialog(f"იტვირთება ETRATI {result['version']}…", "გაუქმება", 0, total, self)
+        bar.setWindowTitle("განახლება")
+        bar.setWindowModality(Qt.WindowModality.WindowModal)
+        bar.setMinimumDuration(0)
+        bar.setValue(0)
+        loader = updates.Downloader(self)
+        self._downloader = loader
+
+        def moved(done, whole):
+            if whole and bar.maximum() != whole:
+                bar.setMaximum(whole)
+            bar.setValue(min(done, bar.maximum() - 1))
+
+        def finished(got):
+            bar.reset()
+            bar.deleteLater()
+            self._downloader = None
+            if isinstance(got, updates.Cancelled):
+                return
+            if isinstance(got, Exception):
+                QMessageBox.warning(self, "განახლება", f"{got}\n\nETRATI უცვლელი დარჩა.")
+                return
+            self._ready_update(got, result["version"])
+        loader.progress.connect(moved)
+        loader.done.connect(finished)
+        bar.canceled.connect(loader.cancel)
+        loader.start(result)
+
+    def _ready_update(self, folder, version):
+        """Downloaded: close (unsaved changes are asked about as always); the strip waits if not."""
+        self._pending_update = (folder, version)
+        if not self.close():
+            self.update_banner.show_message(
+                "info", f"ETRATI {version} ჩამოტვირთულია და დასაყენებლად მზადაა.",
+                "დაყენება", self.close)
+
+    def after_update(self):
+        """At start: tell how the last installation went; its leftovers go in the background."""
+        import threading
+        from . import updates
+        result = updates.read_result()
+        threading.Thread(target=updates.tidy, args=(updates.install_target(),), daemon=True).start()
+        if not result:
+            return
+        if result.get("ok"):
+            self.update_banner.show_message(
+                "success", f"ETRATI განახლდა ვერსიაზე {result.get('version', __version__)}.")
+        else:
+            self.update_banner.show_message(
+                "danger", "განახლება ვერ დაყენდა, ETRATI ძველ ვერსიაზე დარჩა. "
+                         f"მიზეზი: {result.get('error', '')}",
+                "ჩამოტვირთვა…", lambda: updates.open_page(updates.PAGE))
 
     def about(self):
         QMessageBox.about(self, APP_NAME,
@@ -1004,9 +1082,16 @@ class MainWindow(QMainWindow):
                 e.ignore()
                 return
         self.settings.setValue("geometry", self.saveGeometry())
+        reopen = [getattr(d, "path", None) for d in self._docs()]
         while self.tabs.count():
             self.close_tab(0, ask=False)
         self.settings.sync()
         finish_all()  # no engine, Office or Edge may outlive the program
         files.drop_engine_root()  # copies the engines made of documents go too
+        pending = getattr(self, "_pending_update", None)
+        if pending:
+            from . import updates
+            self._pending_update = None
+            updates.start_installer(pending[0], updates.install_target(), os.getpid(),
+                                    pending[1], [p for p in reopen if p and os.path.isfile(p)])
         e.accept()

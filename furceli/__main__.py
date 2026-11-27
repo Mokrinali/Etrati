@@ -34,9 +34,20 @@ def run_child(name, args) -> int:
     return 0
 
 
+def install_update(args) -> int:
+    """`--install-update <folder> <old pid> <version> [files to reopen…]`, run from the new
+    program's download folder after the old window agreed to it and closed."""
+    from furceli import updates
+    target, pid, version, reopen = args[0], int(args[1]), args[2], args[3:]
+    return 0 if updates.install(os.path.dirname(os.path.abspath(sys.executable)), target, pid,
+                                version, reopen) else 1
+
+
 def main() -> int:
     if len(sys.argv) > 3 and sys.argv[1] == "--run-child":
         return run_child(sys.argv[2], sys.argv[3])  # no window: a helper of a running program
+    if len(sys.argv) > 4 and sys.argv[1] == "--install-update":
+        return install_update(sys.argv[2:])  # no window either
     # Imported here: the engine child process re-imports this module and must
     # not load the GUI.
     from PySide6.QtGui import QIcon
@@ -85,6 +96,7 @@ def main() -> int:
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1200, win.offer_default)
         QTimer.singleShot(4000, win.check_updates)  # quietly, at most once a day
+        QTimer.singleShot(5000, win.after_update)  # the installer has ended by then
     for path in paths:
         win.open_file(path)
     code = app.exec()

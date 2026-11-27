@@ -23,7 +23,8 @@ def test_latest_reads_the_release(monkeypatch):
         return io.BytesIO(body.encode())
     monkeypatch.setattr(updates, "_open", fake)
     got = updates.latest()
-    assert got == {"version": "9.1.0", "url": "https://github.com/x/releases/tag/v9.1.0"}
+    assert got["version"] == "9.1.0" and got["url"] == "https://github.com/x/releases/tag/v9.1.0"
+    assert got["asset"] is None  # no zip in this release
     assert seen["ua"] == f"ETRATI/{__version__}"
 
 
