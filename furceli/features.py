@@ -344,6 +344,72 @@ class Features(EditEngine):
         items = [mu.pdf_array_get(v, i) for i in range(mu.pdf_array_len(v))]             if mu.pdf_is_array(v) else [v] if mu.pdf_is_string(v) else []
         return [mu.pdf_to_text_string(i) for i in items if mu.pdf_is_string(i)]
 
+    def _draw_list(self, pno, xref, holder, chosen):
+        """The look of a list field, drawn here: MuPDF redraws a list without its text and
+        marks no choice. Rows of the choices from the top one (TI), the chosen ones on the
+        usual light blue (a colour written into the file), in a font that has every letter."""
+        page = self.doc.load_page(pno)
+        w = next((x for x in page.widgets() if x.xref == xref), None)
+        if w is None:
+            return
+        pairs = [c if isinstance(c, (list, tuple)) else (c, c) for c in w.choice_values or ()]
+        items = [str(c[1]) for c in pairs]
+        size = w.text_fontsize or 12.0
+        color = w.text_color or (0,)
+        fill, border = w.fill_color, w.border_color
+        bw = (w.border_width or 0) if border else 0
+        rect = w.rect
+        width, height = rect.width, rect.height
+        w = None
+        kind, top = self.doc.xref_get_key(xref, "TI")
+        if kind != "int":
+            kind, top = self.doc.xref_get_key(holder, "TI")
+        first = int(top) if kind == "int" and 0 <= int(top) < len(items) else 0
+
+        def paint(c):
+            return " ".join(f"{v:g}" for v in c) + {1: " g", 3: " rg", 4: " k"}[len(c)]
+        line = size * 1.2
+        pad = bw + 1
+        out = ["/Tx BMC", "q"]
+        if fill:
+            out.append(f"{paint(fill)} 0 0 {width:g} {height:g} re f")
+        if bw:
+            out.append(f"{paint(border).upper()} {bw:g} w "
+                       f"{bw / 2:g} {bw / 2:g} {width - bw:g} {height - bw:g} re S")
+        out.append(f"{pad:g} {pad:g} {width - 2 * pad:g} {height - 2 * pad:g} re W n")
+        text = "".join(items[first:]) or "a"
+        name, font = None, None
+        rows = []
+        for k, i in enumerate(range(first, len(items))):
+            y = height - pad - (k + 1) * line
+            if y + line < 0:
+                break
+            rows.append((i, y))
+        for i, y in rows:
+            if i in chosen:
+                out.append(f"0.6 0.757 0.855 rg 0 {y:.3f} {width:g} {line:.3f} re f")
+        if rows:
+            data = _subset(_font_file(text), text)
+            font = pymupdf.Font(fontbuffer=data)
+            name = f"FL{self.doc.xref_length()}"
+            fx = page.insert_font(fontname=name, fontbuffer=data)
+            out.append(f"BT {paint(color)} /{name} {size:g} Tf")
+            for i, y in rows:
+                glyphs = "".join(f"{font.has_glyph(ord(ch)):04x}" for ch in items[i])
+                base = y + (line - size) / 2 + size * .22
+                out.append(f"1 0 0 1 {pad + 1:g} {base:.3f} Tm <{glyphs}> Tj")
+            out.append("ET")
+        out += ["Q", "EMC"]
+        page = None
+        kind, ap = self.doc.xref_get_key(xref, "AP/N")
+        if kind != "xref":
+            return
+        x = int(ap.split()[0])
+        self.doc.update_stream(x, "\n".join(out).encode("latin-1"))
+        self.doc.xref_set_key(x, "BBox", f"[0 0 {width:g} {height:g}]")
+        self.doc.xref_set_key(x, "Matrix", "[1 0 0 1 0 0]")
+        self.doc.xref_set_key(x, "Resources", f"<</Font<</{name} {fx} 0 R>>>>" if rows else "<<>>")
+
     def _parent(self, xref):
         kind, value = self.doc.xref_get_key(xref, "Parent")
         return int(value.split()[0]) if kind == "xref" else 0
@@ -460,20 +526,28 @@ class Features(EditEngine):
             self.doc.xref_set_key(holder, "V", "[%s]" % "".join(
                 pymupdf.get_pdf_str(pairs[i][0]) for i in chosen))
             self.doc.xref_set_key(holder, "I", "[%s]" % " ".join(map(str, chosen)))
+            self._draw_list(pno, xref, holder, chosen)
             return [-1] * self.doc.page_count
         elif w.field_type in (pymupdf.PDF_WIDGET_TYPE_COMBOBOX, pymupdf.PDF_WIDGET_TYPE_LISTBOX):
             # the box shows the display text, the file keeps the export value
             shown = next((c[1] for c in w.choice_values or ()
                           if isinstance(c, (list, tuple)) and c[0] == value), value)
             w.field_value = shown
-            if shown != value:
+            is_list = w.field_type == pymupdf.PDF_WIDGET_TYPE_LISTBOX
+            pairs = [c if isinstance(c, (list, tuple)) else (c, c) for c in w.choice_values or ()]
+            chosen = [i for i, c in enumerate(pairs) if value in (c[0], c[1])][:1]
+            if shown != value or is_list:
                 xref = w.xref
                 w.update()
+                page = w = None
                 parent = self._parent(xref)
                 holder = parent if self.doc.xref_get_key(xref, "T")[0] == "null" and parent else xref
-                for x in {xref, holder}:
-                    if x == holder or self.doc.xref_get_key(x, "V")[0] != "null":
-                        self.doc.xref_set_key(x, "V", pymupdf.get_pdf_str(value))
+                if shown != value:
+                    for x in {xref, holder}:
+                        if x == holder or self.doc.xref_get_key(x, "V")[0] != "null":
+                            self.doc.xref_set_key(x, "V", pymupdf.get_pdf_str(value))
+                if is_list:
+                    self._draw_list(pno, xref, holder, chosen)
                 return [-1] * self.doc.page_count
         else:
             raise EngineError("read_only")
