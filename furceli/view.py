@@ -76,6 +76,9 @@ class PageView(QAbstractScrollArea):
     clicked = Signal(int, object)      # plain click on a page (points)
     contextAt = Signal(int, object, object)  # page, point, global position
     activated = Signal()               # this pane is the one being worked in
+    objectsWanted = Signal(int)        # page whose pictures the "objects" tool needs
+    objectChanged = Signal(int, object, object)  # page, picture, its new place (points)
+    objectDeleted = Signal(int, object)          # page, picture
 
     marks, hits, current_hit = _shared("marks"), _shared("hits"), _shared("current_hit")
     diff, frames = _shared("diff"), _shared("frames")
@@ -113,6 +116,9 @@ class PageView(QAbstractScrollArea):
         self.tool = "select"
         self._shape = None                 # [page, [points]] being drawn
         self.widgets: dict[int, list] = {}
+        self.objects: dict[int, list] = {}  # pictures of pages, for the "objects" tool
+        self._obj = None                   # (page, picture) chosen with the "objects" tool
+        self._obj_drag = None              # [mode, start point, anchor, rect being shown]
         self._stale: dict = {}             # last picture of a page that was just edited
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -167,6 +173,7 @@ class PageView(QAbstractScrollArea):
             self.lost_marks = sum(len(m) for p, m in old_marks.items() if p not in kept)
         self._sel_a = self._sel_b = None
         self._shape = None
+        self.objects, self._obj, self._obj_drag = {}, None, None
         self.sizes = sizes
         if same:  # nothing moved: the reader keeps the exact scroll position
             self.viewport().update()
@@ -610,6 +617,8 @@ class PageView(QAbstractScrollArea):
                 p.drawRect(box)
             if self._shape and self._shape[0] == pno:
                 self._paint_shape(p)
+            if self._obj and self._obj[0] == pno:
+                self._paint_object(p)
             if self._crop and self._crop[0] == pno:
                 keep = self._doc_rect(pno, self._crop_rect())
                 shade = QColor(0, 0, 0, 110)
@@ -637,11 +646,99 @@ class PageView(QAbstractScrollArea):
     def set_tool(self, name):
         self.cancel_crop()
         self.tool, self._shape = name, None
+        self._obj = self._obj_drag = None
         cursor = {"select": Qt.CursorShape.ArrowCursor, "edit": Qt.CursorShape.IBeamCursor,
                   "highlight": Qt.CursorShape.IBeamCursor,
                   "underline": Qt.CursorShape.IBeamCursor,
-                  "strikeout": Qt.CursorShape.IBeamCursor}.get(name, Qt.CursorShape.CrossCursor)
+                  "strikeout": Qt.CursorShape.IBeamCursor,
+                  "object": Qt.CursorShape.ArrowCursor}.get(name, Qt.CursorShape.CrossCursor)
         self.viewport().setCursor(cursor)
+        self.viewport().update()
+
+    # -- pictures already on a page: the "objects" tool ---------------------
+    HANDLE = 5  # half the size of a corner handle, in screen pixels
+
+    def object_at(self, pno, q):
+        """The picture under a point; the one drawn last is on top."""
+        for o in reversed(self.objects.get(pno, ())):
+            r = o["rect"]
+            if o["movable"] and r[0] <= q.x() <= r[2] and r[1] <= q.y() <= r[3]:
+                return o
+        return None
+
+    def selected_object(self):
+        return self._obj
+
+    def _obj_rect(self):
+        return self._obj_drag[3] if self._obj_drag else tuple(self._obj[1]["rect"])
+
+    def _corner_at(self, pno, dp):
+        """The corner handle of the chosen picture at a point (view pixels), or None."""
+        box = self._doc_rect(pno, self._obj_rect())
+        tol = (self.HANDLE + 3) * self.dpr
+        for c in (box.topLeft(), box.topRight(), box.bottomRight(), box.bottomLeft()):
+            if abs(c.x() - dp.x()) <= tol and abs(c.y() - dp.y()) <= tol:
+                return c
+        return None
+
+    def _paint_object(self, p):
+        pno, _o = self._obj
+        box = self._doc_rect(pno, self._obj_rect())
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(theme.color("focus"), 1.5 * self.dpr, Qt.PenStyle.DashLine))
+        p.drawRect(box)
+        p.setPen(QPen(theme.color("focus"), 1.5 * self.dpr))
+        p.setBrush(theme.color("paper"))
+        h = self.HANDLE * self.dpr
+        for c in (box.topLeft(), box.topRight(), box.bottomRight(), box.bottomLeft()):
+            p.drawRect(QRectF(c.x() - h, c.y() - h, 2 * h, 2 * h))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _object_press(self, pt):
+        pno = self._nearest_page(pt)
+        dp = pt + QPointF(self._origin())
+        q = self.doc_to_page(pno, dp)
+        if self._obj and self._obj[0] == pno:
+            corner = self._corner_at(pno, dp)
+            if corner is not None:  # resizing: the opposite corner stays where it is
+                r = self._obj_rect()
+                c = self.doc_to_page(pno, corner)
+                ax = r[0] if abs(c.x() - r[2]) < abs(c.x() - r[0]) else r[2]
+                ay = r[1] if abs(c.y() - r[3]) < abs(c.y() - r[1]) else r[3]
+                self._obj_drag = ["size", q, QPointF(ax, ay), r]
+                return
+        if pno not in self.objects:
+            self.objectsWanted.emit(pno)
+        o = self.object_at(pno, q)
+        self._obj = (pno, o) if o else None
+        self._obj_drag = ["move", q, None, tuple(o["rect"])] if o else None
+        self.viewport().update()
+
+    def _object_drag(self, pt):
+        pno, o = self._obj
+        q = self.doc_to_page(pno, pt + QPointF(self._origin()))
+        mode, start, anchor, _ = self._obj_drag
+        x0, y0, x1, y1 = o["rect"]
+        w, h = x1 - x0, y1 - y0
+        pw, ph = self.sizes[pno] if self.rotation in (0, 180) else self.sizes[pno][::-1]
+        if mode == "move":
+            dx = min(max(q.x() - start.x(), -x0), pw - x1)
+            dy = min(max(q.y() - start.y(), -y0), ph - y1)
+            new = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+        else:  # the proportion of the picture is kept
+            k = max(abs(q.x() - anchor.x()) / w, abs(q.y() - anchor.y()) / h, 8 / max(w, h))
+            nw, nh = w * k, h * k
+            nx = anchor.x() if q.x() >= anchor.x() else anchor.x() - nw
+            ny = anchor.y() if q.y() >= anchor.y() else anchor.y() - nh
+            new = (nx, ny, nx + nw, ny + nh)
+        self._obj_drag[3] = new
+        self.viewport().update()
+
+    def _object_release(self):
+        d, self._obj_drag = self._obj_drag, None
+        pno, o = self._obj
+        if max(abs(a - b) for a, b in zip(d[3], o["rect"])) > .5:
+            self.objectChanged.emit(pno, o, tuple(d[3]))
         self.viewport().update()
 
     def _clamp(self, pno, q):
@@ -835,6 +932,9 @@ class PageView(QAbstractScrollArea):
             q = self.doc_to_page(pno, pt + QPointF(self._origin()))
             self._crop = [pno, q, q]
             return
+        if self.tool == "object":
+            self._object_press(pt)
+            return
         if self.tool in self.BOX_TOOLS | self.LINE_TOOLS | {"ink"}:
             pno = self._nearest_page(pt)
             q = self._clamp(pno, self.doc_to_page(pno, pt + QPointF(self._origin())))
@@ -864,6 +964,20 @@ class PageView(QAbstractScrollArea):
             if self._crop and e.buttons() & Qt.MouseButton.LeftButton:
                 self._crop[2] = self.doc_to_page(self._crop[0], pt + QPointF(self._origin()))
                 self.viewport().update()
+            return
+        if self._obj_drag and e.buttons() & Qt.MouseButton.LeftButton:
+            self._object_drag(pt)
+            return
+        if self.tool == "object":
+            pno = self._nearest_page(pt)
+            dp = pt + QPointF(self._origin())
+            if self._obj and self._obj[0] == pno and self._corner_at(pno, dp) is not None:
+                shape = Qt.CursorShape.SizeFDiagCursor
+            elif self.object_at(pno, self.doc_to_page(pno, dp)):
+                shape = Qt.CursorShape.SizeAllCursor
+            else:
+                shape = Qt.CursorShape.ArrowCursor
+            self.viewport().setCursor(shape)
             return
         if self._shape:
             pno, pts = self._shape
@@ -916,6 +1030,9 @@ class PageView(QAbstractScrollArea):
             return
         if self._shape:
             self._finish_shape()
+            return
+        if self._obj_drag:
+            self._object_release()
             return
         if getattr(self, "_press_widget", None):
             w, self._press_widget = self._press_widget, None
@@ -1013,6 +1130,11 @@ class PageView(QAbstractScrollArea):
             self.cancel_crop()
         elif k == Qt.Key.Key_Escape and self._shape:
             self._shape = None
+            self.viewport().update()
+        elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._obj and not self._obj_drag:
+            self.objectDeleted.emit(*self._obj)
+        elif k == Qt.Key.Key_Escape and self._obj:
+            self._obj = self._obj_drag = None
             self.viewport().update()
         elif k == Qt.Key.Key_Escape and self.tool != "select":
             self.toolDone.emit("cancel", self._page, None)

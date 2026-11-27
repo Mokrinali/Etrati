@@ -231,7 +231,8 @@ class MainWindow(QMainWindow):
              ("rect", "ოთხკუთხედი", 0xE7FB), ("ellipse", "ელიფსი", 0xEA3A),
              ("line", "ხაზი", 0xE738), ("arrow", "ისარი", 0xE72A), ("cloud", "ღრუბელი", 0xE753),
              ("stamp", "შტამპი", 0xE8FB),
-             ("image", "სურათი", 0xEB9F), ("edit", "ტექსტის შეცვლა", 0xE70F),
+             ("image", "სურათი", 0xEB9F), ("object", "ობიექტები", 0xE7C2),
+             ("edit", "ტექსტის შეცვლა", 0xE70F),
              ("redact", "დასაფარის მონიშვნა", 0xE75C), ("field", "ფორმის ველი", 0xE9D5)]
 
     def _tool_actions(self):
@@ -290,7 +291,8 @@ class MainWindow(QMainWindow):
         self.a_gray_by = [self.a_water, self.a_head, self.a_bates, self.a_back, self.a_ocr,
                           self.a_redgo, self.a_scrub, self.a_compress, self.a_flat,
                           self.tool_acts["edit"], self.tool_acts["redact"],
-                          self.tool_acts["field"], self.tool_acts["image"], self.a_sigpic]
+                          self.tool_acts["field"], self.tool_acts["image"], self.tool_acts["object"],
+                          self.a_sigpic]
 
     def _use_tool(self, name):
         if self.doc:
@@ -500,8 +502,8 @@ class MainWindow(QMainWindow):
         c.addSeparator()
         c.addActions([self.a_sigpic, self.a_color, self.a_author, self.a_flat])
         i = mb.addMenu("შიგთავსი")
-        i.addActions([self.tool_acts["edit"], self.tool_acts["text"], self.tool_acts["image"],
-                      self.tool_acts["field"]])
+        i.addActions([self.tool_acts["edit"], self.tool_acts["object"], self.tool_acts["text"],
+                      self.tool_acts["image"], self.tool_acts["field"]])
         i.addSeparator()
         i.addActions([self.a_ocr, self.a_water, self.a_head, self.a_bates, self.a_back])
         z = mb.addMenu("უსაფრთხოება")

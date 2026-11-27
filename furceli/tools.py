@@ -122,6 +122,9 @@ class ToolsMixin:
             self.organize(False)
         for v in self.views:  # the pen is one for every pane
             v.set_tool(name)
+        if name == "object":
+            self.status.emit("დააწკაპუნეთ სურათზე: გადათრევა — გადატანა, კუთხე — ზომა, "
+                             "Delete — წაშლა, მარჯვენა ღილაკი — ჩანაცვლება")
         self.changed.emit()
 
     def load_comments(self):
@@ -291,6 +294,28 @@ class ToolsMixin:
             self.pending_image = None
             self.set_tool("select")
 
+    # -- pictures already on the page (HANDOFF.md, item 7) -----------------
+    def _load_objects(self, v, pno):
+        v.objects[pno] = self._quiet("images", pno) or []
+
+    def _object_moved(self, pno, o, rect):
+        self.edit(("image_move", pno, o["xref"], tuple(o["rect"]), tuple(rect)))
+
+    def _object_deleted(self, pno, o):
+        self.edit(("image_del", pno, o["xref"], tuple(o["rect"])))
+
+    def _object_swap(self, pno, o):
+        path, _ = QFileDialog.getOpenFileName(self, "სურათის ჩანაცვლება", "",
+                                              "სურათები (*.png *.jpg *.jpeg *.bmp *.gif *.tif)")
+        if not path:
+            return
+        try:
+            copy = self._keep_file(path)
+        except OSError:
+            QMessageBox.warning(self, "სურათი", error_text("no_access"))
+            return
+        self.edit(("image_swap", pno, o["xref"], tuple(o["rect"]), copy))
+
     def place_signature(self):
         pad = SignaturePad(self, self._session())
         if pad.exec() and pad.path:
@@ -308,6 +333,14 @@ class ToolsMixin:
     def view_menu(self, pno, q, pos):
         menu = QMenu(self)
         menu.aboutToHide.connect(menu.deleteLater)
+        if self.view.tool == "object" and self.allowed("image_move"):
+            if pno not in self.view.objects:
+                self._load_objects(self.view, pno)
+            o = self.view.object_at(pno, q)
+            if o:
+                menu.addAction("სურათის ჩანაცვლება…", lambda: self._object_swap(pno, o))
+                menu.addAction("სურათის წაშლა", lambda: self._object_deleted(pno, o))
+                menu.addSeparator()
         if self.view.has_selection():
             menu.addAction("კოპირება", self.copy)
             menu.addAction("მარკერი", lambda: self.mark_selection("highlight"))

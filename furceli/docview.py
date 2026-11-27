@@ -129,6 +129,9 @@ class DocView(ToolsMixin, QWidget):
         v.clicked.connect(mine(lambda *a: self.field_clicked(*a)))
         v.contextAt.connect(mine(lambda *a: self.view_menu(*a)))
         v.cropDrawn.connect(mine(lambda *a: self._crop_drawn(*a)))
+        v.objectsWanted.connect(lambda p: self._load_objects(v, p))
+        v.objectChanged.connect(mine(lambda *a: self._object_moved(*a)))
+        v.objectDeleted.connect(mine(lambda *a: self._object_deleted(*a)))
         v.uriActivated.connect(self._open_uri)
         v.pageChanged.connect(lambda p: v is self._active and (
             self._page_changed(p), self.pageChanged.emit(p)))
@@ -571,6 +574,7 @@ class DocView(ToolsMixin, QWidget):
     def _assets_present(self, ops):
         paths = [self._base] + [op[1] for op in ops if op[0] == "insert"]
         paths += [op[3] for op in ops if op[0] == "image"]
+        paths += [op[4] for op in ops if op[0] == "image_swap"]
         return all(p and os.path.isfile(p) for p in paths)
 
     def _ensure_base(self) -> bool:

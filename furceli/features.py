@@ -748,6 +748,133 @@ class Features(EditEngine):
             raise EngineError("bad_image")
         return self._same(pno)
 
+    # -- pictures already on a page (HANDOFF.md, item 7) -----------------------
+    # A picture is changed where the page draws it ("a b c d e f cm /Name Do"), so what was
+    # drawn over it stays over it. A picture inside a form, slanted, or drawn in a way that
+    # cannot be found exactly is refused rather than changed in part.
+    _CM_DO = rb"((?:[-+]?(?:\d+\.?\d*|\.\d+)\s+){6})cm\s*/(%s)\s+Do\b"
+
+    @staticmethod
+    def _own_images(page):
+        """name -> xref of the pictures the page draws itself (not inside a form)."""
+        return {i[7]: i[0] for i in page.get_images(full=True) if i[9] == 0 and i[7]}
+
+    @staticmethod
+    def _square(t):
+        """Upright or turned by quarters (as on a turned page), never slanted."""
+        a, b, c, d = t[:4]
+        return abs(a * b) + abs(c * d) < 1e-6 and abs(a * d - b * c) > 1e-9
+
+    def images(self, pno):
+        """The pictures of a page, where they are shown: [{index, xref, rect, movable}]."""
+        page = self.doc.load_page(pno)
+        own = set(self._own_images(page).values())
+        out = []
+        for k, info in enumerate(page.get_image_info(xrefs=True)):
+            x = info.get("xref") or 0
+            if not x:
+                continue  # an inline picture: not an object of its own
+            r = (Rect(info["bbox"]) * page.rotation_matrix).normalize()
+            out.append({"index": k, "xref": x, "rect": tuple(round(v, 3) for v in r),
+                        "movable": self._square(info["transform"]) and x in own})
+        return out
+
+    def _image_site(self, pno, xref, rect, tidy=True):
+        """(page, its picture info, content stream xref, regex match of its cm … Do)."""
+        page = self.doc.load_page(pno)
+        target = (Rect(rect) * page.derotation_matrix).normalize()
+        same = [i for i in page.get_image_info(xrefs=True) if i.get("xref") == xref]
+        hits = [i for i in same if all(abs(a - b) <= 1 for a, b in zip(Rect(i["bbox"]), target))]
+        if len(hits) != 1:
+            raise EngineError("stale")
+        info = hits[0]
+        if not self._square(info["transform"]):
+            raise EngineError("image_complex")
+        names = [re.escape(n.encode()) for n, x in self._own_images(page).items() if x == xref]
+        if not names:
+            raise EngineError("image_complex")
+        pattern = re.compile(self._CM_DO % b"|".join(names))
+        found = [(sx, m) for sx in page.get_contents()
+                 for m in pattern.finditer(self.doc.xref_stream(sx) or b"")]
+        if len(found) != len(same):
+            if tidy:  # written in a way the pattern does not see: once in MuPDF's own words
+                page.clean_contents()
+                page = None
+                return self._image_site(pno, xref, rect, tidy=False)
+            raise EngineError("image_complex")
+        sx, m = found[same.index(info)]
+        return page, info, sx, m
+
+    def _put_matrix(self, sx, m, matrix):
+        data = self.doc.xref_stream(sx)
+        nums = " ".join(f"{v:.6g}" for v in tuple(matrix)).encode()
+        self.doc.update_stream(sx, data[:m.start(1)] + nums + b" " + data[m.end(1):])
+
+    def _op_image_move(self, pno, xref, old, new):
+        page, info, sx, m = self._image_site(pno, xref, old)
+        o = Rect(info["bbox"])
+        n = (Rect(new) * page.derotation_matrix).normalize()
+        if n.width < 2 or n.height < 2 or o.width < 1e-3 or o.height < 1e-3:
+            raise EngineError("bad_op")
+        t = Matrix(info["transform"])
+        to = (Matrix(1, 0, 0, 1, -o.x0, -o.y0) * Matrix(n.width / o.width, 0, 0, n.height / o.height, 0, 0)
+              * Matrix(1, 0, 0, 1, n.x0, n.y0))
+        local = Matrix(*map(float, m.group(1).split()))
+        # MuPDF reports the picture with its top row first; PDF draws the unit square bottom up:
+        # full = flip · local · outer.  Wanted: full · to  =>  local' = flip · full · to · full⁻¹ · flip · local
+        flip = Matrix(1, 0, 0, -1, 0, 1)
+        self._put_matrix(sx, m, flip * t * to * ~t * flip * local)
+        return self._same(pno)
+
+    def _op_image_del(self, pno, xref, rect):
+        _page, _info, sx, m = self._image_site(pno, xref, rect)
+        data = self.doc.xref_stream(sx)
+        self.doc.update_stream(sx, data[:m.start()] + data[m.end():])
+        return self._same(pno)
+
+    def _op_image_swap(self, pno, xref, rect, path):
+        uses = sum(1 for p in self.doc for i in p.get_image_info(xrefs=True) if i.get("xref") == xref)
+        if uses != 1:
+            raise EngineError("image_shared")  # one file object, shown in several places
+        self._image_site(pno, xref, rect)  # stale or not drawn plainly: refused before changing
+        try:
+            pix = pymupdf.Pixmap(path)
+            w, h = pix.width, pix.height
+            pix = None
+        except Exception:
+            raise EngineError("bad_image")
+        page = self.doc.load_page(pno)
+        before = set(self._own_images(page))
+        try:  # the new picture becomes an object of the file; its own drawing is taken out again
+            new_x = page.insert_image(page.rect, filename=path)
+        except Exception:
+            raise EngineError("bad_image")
+        page = None
+        page = self.doc.load_page(pno)
+        added = [n for n, x in self._own_images(page).items() if n not in before and x == new_x]
+        if len(added) != 1:
+            raise EngineError("image_complex")
+        name = added[0].encode()
+        drawn = re.compile(self._CM_DO % re.escape(name))
+        for c in page.get_contents():
+            data = self.doc.xref_stream(c) or b""
+            mm = drawn.search(data)
+            if mm:
+                self.doc.update_stream(c, data[:mm.start()] + data[mm.end():])
+                break
+        page = None
+        # where the old one was drawn, the new one is drawn now: same place among the others
+        _page, _info, sx, m = self._image_site(pno, xref, rect)
+        data = self.doc.xref_stream(sx)
+        self.doc.update_stream(sx, data[:m.start(2)] + name + data[m.end(2):])
+        _page = None
+        o = Rect(rect)
+        k = min(o.width / w, o.height / h)  # fitted inside the old place, centred
+        fw, fh = w * k, h * k
+        fit = (o.x0 + (o.width - fw) / 2, o.y0 + (o.height - fh) / 2,
+               o.x0 + (o.width + fw) / 2, o.y0 + (o.height + fh) / 2)
+        return self._op_image_move(pno, new_x, rect, fit)
+
     def _op_watermark(self, pages, text, o):
         for pno in pages:
             page = self.doc.load_page(pno)

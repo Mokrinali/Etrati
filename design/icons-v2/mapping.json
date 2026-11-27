@@ -327,5 +327,12 @@
   "label": "ღრუბელი",
   "current": "",
   "status": "new"
+ },
+ {
+  "file": "svg/object.svg",
+  "code": "window.py tool_acts['object']",
+  "label": "ობიექტები",
+  "current": "",
+  "status": "new"
  }
 ]
