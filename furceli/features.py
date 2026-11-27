@@ -914,6 +914,55 @@ class Features(EditEngine):
                             note if k == "string" else ""))
         return out
 
+    def snaps(self, pno):
+        """What a measuring point may snap to, as shown: {points: [(x, y, kind)], segments}.
+        Ends of the page's own straight lines, rectangles and curves, crossings of the
+        straight ones, and the straight lines themselves. A scanned page has none."""
+        page = self.doc.load_page(pno)
+        rot = page.rotation_matrix
+        lines, ends = [], []
+        try:
+            drawings = page.get_drawings()
+        except Exception:
+            drawings = []
+        for d in drawings:
+            for it in d.get("items", ()):
+                op = it[0]
+                if op == "l":
+                    lines.append((it[1], it[2]))
+                elif op == "re":
+                    r = Rect(it[1])
+                    c = [r.tl, r.tr, r.br, r.bl]
+                    lines += [(c[i], c[(i + 1) % 4]) for i in range(4)]
+                elif op == "qu":
+                    q = it[1]
+                    c = [q.ul, q.ur, q.lr, q.ll]
+                    lines += [(c[i], c[(i + 1) % 4]) for i in range(4)]
+                elif op == "c":
+                    ends += [it[1], it[4]]  # a curve: its two ends only
+            if len(lines) > measure.MAX_SEGMENTS:
+                break
+        lines = lines[:measure.MAX_SEGMENTS]
+        shown = [((Point(a) * rot).x, (Point(a) * rot).y, (Point(b) * rot).x, (Point(b) * rot).y)
+                 for a, b in lines if abs(a.x - b.x) + abs(a.y - b.y) > .2]
+        pts, seen = [], set()
+
+        def put(x, y, kind):
+            key = (round(x, 1), round(y, 1))
+            if key not in seen:
+                seen.add(key)
+                pts.append((round(x, 3), round(y, 3), kind))
+        for x0, y0, x1, y1 in shown:
+            put(x0, y0, "end")
+            put(x1, y1, "end")
+        for p in ends:
+            p = Point(p) * rot
+            put(p.x, p.y, "end")
+        size = max(page.rect.width, page.rect.height) / 50
+        for x, y in measure.crossings([((x0, y0), (x1, y1)) for x0, y0, x1, y1 in shown], size):
+            put(x, y, "cross")
+        return {"points": pts, "segments": [tuple(round(v, 3) for v in s) for s in shown]}
+
     def _measure_kind(self, xref):
         kind = self.doc.xref_get_key(xref, "ETRATIkind")[1].lstrip("/")
         return kind if kind in measure.KINDS else ""

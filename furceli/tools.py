@@ -381,6 +381,12 @@ class ToolsMixin:
     # -- measuring to scale (design canvas "ETRATI: მასშტაბით გაზომვა") --------
     MEASURE_KINDS = {"m_distance": "distance", "m_path": "path", "m_area": "area"}
 
+    def _load_snaps(self, v, pno):
+        """The lines of a page measuring may snap to: read once a page (and after edits)."""
+        from . import measure
+        got = self._quiet("snaps", pno)
+        v.snaps[pno] = measure.SnapIndex(got["points"], got["segments"]) if got else None
+
     def _load_scales(self):
         scales = self._quiet("scales") or []
         for v in self.views:
@@ -399,7 +405,7 @@ class ToolsMixin:
                         "დაყენება…", self.set_scale)
         self.status.emit("სიგრძე: დააწკაპუნეთ დასაწყისზე და ბოლოზე · ტეხილი/ფართობი: დასრულება "
                          "ორმაგი დაწკაპუნებით ან Enter · Backspace — ბოლო წერტილის წაშლა · "
-                         "Shift — ჰორიზ./ვერტ./45° · Esc — გაუქმება")
+                         "Shift — ჰორიზ./ვერტ./45° · Alt — მიწებების გარეშე · Esc — გაუქმება")
 
     def set_scale(self, drawn=None, page=None):
         """The scale dialog; "draw the known length" closes it, the line is drawn, it comes back."""

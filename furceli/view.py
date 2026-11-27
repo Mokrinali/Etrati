@@ -81,6 +81,7 @@ class PageView(QAbstractScrollArea):
     objectDeleted = Signal(int, object)          # page, picture
     objectTurned = Signal(int, object, int)      # page, picture, degrees clockwise as shown
     objectCopy = Signal(int, object)             # page, picture: "on other pages too…"
+    snapsWanted = Signal(int)          # page whose lines measuring may snap to
 
     marks, hits, current_hit = _shared("marks"), _shared("hits"), _shared("current_hit")
     diff, frames = _shared("diff"), _shared("frames")
@@ -124,6 +125,10 @@ class PageView(QAbstractScrollArea):
         self._drop = None                  # (page, rect): where a dragged picture would go
         self._measure = None               # [page, [points], cursor]: a measurement being drawn
         self.measure_scales: dict = {}     # page -> its scale (or None), for the live value
+        self.snaps: dict = {}              # page -> measure.SnapIndex of its own lines
+        self.snap_on = True                # measuring snaps to ends, crossings, lines
+        self._snap = None                  # (x, y, kind) the point under the mouse snapped to
+        self._hover = None                 # (page, point): where the next point would go
         self._stale: dict = {}             # last picture of a page that was just edited
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -180,6 +185,7 @@ class PageView(QAbstractScrollArea):
         self._shape = None
         self.objects, self._obj, self._obj_drag = {}, None, None
         self._measure, self.measure_scales = None, {}
+        self.snaps, self._snap, self._hover = {}, None, None
         self._hide_bar()
         self.sizes = sizes
         if same:  # nothing moved: the reader keeps the exact scroll position
@@ -632,6 +638,8 @@ class PageView(QAbstractScrollArea):
                 self._paint_drop(p)
             if self._measure and self._measure[0] == pno:
                 self._paint_measure(p)
+            if self._snap and self._hover and self._hover[0] == pno and self.tool in self.MEASURE_TOOLS:
+                self._paint_snap(p, pno)
             if self._crop and self._crop[0] == pno:
                 keep = self._doc_rect(pno, self._crop_rect())
                 shade = QColor(0, 0, 0, 110)
@@ -746,9 +754,24 @@ class PageView(QAbstractScrollArea):
     MEASURE_TOOLS = {"m_distance": "distance", "m_path": "path", "m_area": "area",
                      "m_calibrate": "distance"}
 
+    SNAP_PIXELS = 8  # how near the mouse a point must be to snap, on the screen
+
     def _measure_point(self, pno, pt):
-        """The page point under the mouse; with Shift, straight across, down or at 45°."""
+        """The page point under the mouse: snapped to the drawing's own line ends, crossings
+        or lines when near (not with Alt, nor with snapping off); else, with Shift, straight
+        across, down or at 45°."""
         q = self._clamp(pno, self.doc_to_page(pno, pt + QPointF(self._origin())))
+        self._snap = None
+        alt = QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier
+        if self.snap_on and not alt:
+            if pno not in self.snaps:
+                self.snapsWanted.emit(pno)
+            index = self.snaps.get(pno)
+            if index is not None:
+                hit = index.find(q.x(), q.y(), self.SNAP_PIXELS * self.dpr / self.scale)
+                if hit is not None:
+                    self._snap = hit
+                    return QPointF(hit[0], hit[1])
         if (self._measure and self._measure[1]
                 and QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier):
             import math
@@ -833,6 +856,29 @@ class PageView(QAbstractScrollArea):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(theme.color("surface-raised"))
         p.drawText(QRectF(box), Qt.AlignmentFlag.AlignCenter, text)
+
+    SNAP_NAMES = {"end": "ბოლო", "cross": "გადაკვეთა", "line": "ხაზზე"}
+
+    def _paint_snap(self, p, pno):
+        """■ an end, ✕ a crossing, ● on a line: where the point lands."""
+        x, y, kind = self._snap
+        c = self.page_to_doc(pno, QPointF(x, y))
+        r = 5 * self.dpr
+        p.setPen(QPen(theme.color("focus"), 2 * self.dpr))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if kind == "end":
+            p.drawRect(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
+        elif kind == "cross":
+            p.drawLine(QPointF(c.x() - r, c.y() - r), QPointF(c.x() + r, c.y() + r))
+            p.drawLine(QPointF(c.x() - r, c.y() + r), QPointF(c.x() + r, c.y() - r))
+        else:
+            p.drawEllipse(c, r * .8, r * .8)
+        if not self._measure:  # while drawing, the value box says enough
+            f = p.font()
+            f.setPixelSize(round(11 * self.dpr))
+            p.setFont(f)
+            p.setPen(theme.color("focus"))
+            p.drawText(c + QPointF(r + 4 * self.dpr, -r - 2 * self.dpr), self.SNAP_NAMES[kind])
 
     def show_drop(self, pno=None, rect=None):
         drop = (pno, tuple(rect)) if rect is not None else None
@@ -1147,6 +1193,12 @@ class PageView(QAbstractScrollArea):
             return
         if self._measure:
             self._measure[2] = self._measure_point(self._measure[0], pt)
+            self._hover = (self._measure[0], self._measure[2])
+            self.viewport().update()
+            return
+        if self.tool in self.MEASURE_TOOLS:  # before the first point: show what it would snap to
+            pno = self._nearest_page(pt)
+            self._hover = (pno, self._measure_point(pno, pt))
             self.viewport().update()
             return
         if self.tool == "object":

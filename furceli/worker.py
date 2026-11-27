@@ -8,7 +8,7 @@ from . import convert, files, scan, signing
 from .engine import EngineError
 from .features import Features
 
-QUERIES = {"render", "images", "objects", "scale", "scales", "measures", "chars", "search", "links", "annots", "all_annots", "widgets", "lines",
+QUERIES = {"render", "images", "objects", "scale", "scales", "measures", "snaps", "chars", "search", "links", "annots", "all_annots", "widgets", "lines",
            "ocr_words", "compare", "visual_diff", "mentions", "page_texts", "pdf_box"}
 CHANGES = {"open", "replay", "apply", "save", "export", "pdfa"}
 SCAN = {"scan_count", "scan_analyse", "scan_preview", "scan_build", "scan_join"}

@@ -170,6 +170,9 @@ class MainWindow(QMainWindow):
         self.a_paste = self._act("სურათის ჩასმა ბუფერიდან", self._paste, "Ctrl+V")
         self.a_scale = self._act("მასშტაბი…", lambda: self.doc.set_scale())
         self.a_mlist = self._act("გაზომვების სია…", lambda: self.doc.show_measures())
+        self.a_snap = self._act("მიწებება ხაზებზე (Alt — დროებით გამორთვა)", self._set_snap,
+                                checkable=True, needs_doc=False)
+        self.a_snap.setChecked(self.settings.value("snap", True, type=bool))
         self.a_find = self._act("ძიება", lambda: self.doc.open_search(), "Ctrl+F", 0xE721)
         self.a_next = self._act("შემდეგი შედეგი", lambda: self.doc.next_hit(1), "F3")
         self.a_prev = self._act("წინა შედეგი", lambda: self.doc.next_hit(-1), "Shift+F3")
@@ -537,7 +540,7 @@ class MainWindow(QMainWindow):
         meas.addActions([self.tool_acts["m_distance"], self.tool_acts["m_path"],
                          self.tool_acts["m_area"]])
         meas.addSeparator()
-        meas.addActions([self.a_scale, self.a_mlist])
+        meas.addActions([self.a_scale, self.a_mlist, self.a_snap])
         v = mb.addMenu("ხედი")
         v.addActions([self.a_in, self.a_out, self.a_100, self.a_width, self.a_page])
         v.addSeparator()
@@ -866,6 +869,8 @@ class MainWindow(QMainWindow):
                          "ellipse", "line", "arrow", "cloud", "stamp", "m_distance", "m_path",
                          "m_area"):
                 self.tool_acts[name].setEnabled(doc.info["can_annotate"])
+            for v in getattr(doc, "views", ()):  # new tabs and panes follow the switch
+                v.snap_on = self.a_snap.isChecked()
             s = doc.page_scale() if hasattr(doc, "page_scale") else None
             self.a_scale.setText("მასშტაბი…" if s is None else
                                  f"მასშტაბი: {s.get('label') or '?'} · "
@@ -1127,6 +1132,13 @@ class MainWindow(QMainWindow):
                 a.trigger()
                 return
         super().keyPressEvent(e)
+
+    def _set_snap(self, on):
+        self.settings.setValue("snap", bool(on))
+        for doc in self._docs():
+            for v in getattr(doc, "views", ()):
+                v.snap_on = bool(on)
+                v.viewport().update()
 
     PLACEABLE = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"}
 

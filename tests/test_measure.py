@@ -272,3 +272,75 @@ def test_a_note_and_the_list(win, tmp_path, monkeypatch):  # noqa: F811
     from openpyxl import load_workbook
     rows = list(load_workbook(out).active.values)
     assert rows[1][:5] == (1, "ფართობი", "ოთახი 1", 50.0, "მ²") and rows[2][3] == 10.0
+
+
+# -- snapping to the drawing's own lines --------------------------------------------------
+def plan(tmp_path, rot=0):
+    """A room 100 x 200 points as shown, a wall line across it from (100, 200) to (400, 250)."""
+    d = pymupdf.open()
+    p = d.new_page(width=842 if rot in (0, 180) else 595, height=595 if rot in (0, 180) else 842)
+    p.set_rotation(rot)
+    m = p.derotation_matrix
+    p.draw_rect(pymupdf.Rect(100, 100, 400, 300) * m, width=2)
+    p.draw_line(pymupdf.Point(100, 200) * m, pymupdf.Point(400, 250) * m)
+    path = str(tmp_path / f"room{rot}.pdf")
+    d.save(path)
+    return path
+
+
+@pytest.mark.parametrize("rot", [0, 90])
+def test_the_drawing_gives_its_ends_and_crossings(tmp_path, rot):
+    e = engine(plan(tmp_path, rot))
+    s = e.snaps(0)
+    ends = {(round(x), round(y)) for x, y, k in s["points"] if k == "end"}
+    cross = {(round(x), round(y)) for x, y, k in s["points"] if k == "cross"}
+    assert {(100, 100), (400, 100), (400, 300), (100, 300), (100, 200), (400, 250)} <= ends
+    assert len(s["segments"]) >= 5
+
+
+def test_crossings_inside_lines_are_found(tmp_path):
+    d = pymupdf.open()
+    p = d.new_page(width=600, height=600)
+    p.draw_line((100, 100), (500, 500))
+    p.draw_line((100, 500), (500, 100))
+    path = str(tmp_path / "x.pdf")
+    d.save(path)
+    s = engine(path).snaps(0)
+    assert (300, 300) in {(round(x), round(y)) for x, y, k in s["points"] if k == "cross"}
+
+
+def test_a_click_near_a_corner_lands_on_it(win, tmp_path):  # noqa: F811
+    from test_ui import open_doc
+    from test_ui_pages import idle
+    doc = open_doc(win, plan(tmp_path))
+    doc.edit(("scale", [0], M_PER_PT * 100, "m", 2, "1:100"))
+    idle(doc)
+    win.tool_acts["m_distance"].trigger()
+    v = doc.view
+    _click(v, 0, 102, 98)   # a little off the corner (100, 100)
+    _click(v, 0, 397, 103)  # a little off the corner (400, 100)
+    idle(doc)
+    m = doc._quiet("measures")[0]
+    assert abs(m["value"] - 300 * M_PER_PT * 100) < 1e-6  # exactly 300 points: both corners
+
+
+def test_alt_and_the_switch_turn_snapping_off(win, tmp_path):  # noqa: F811
+    from PySide6.QtCore import QPointF
+    from test_ui import open_doc
+    doc = open_doc(win, plan(tmp_path))
+    win.tool_acts["m_distance"].trigger()
+    v = doc.view
+    pt = QPointF(vp(v, 0, 102, 98)) * v.dpr
+    q = v._measure_point(0, pt)
+    assert (round(q.x(), 3), round(q.y(), 3)) == (100, 100) and v._snap[2] == "end"
+    win.a_snap.setChecked(False)
+    q = v._measure_point(0, pt)
+    assert abs(q.x() - 100) > .5 and v._snap is None
+
+
+def test_a_corner_pulls_harder_than_the_line_beside_it():
+    from furceli import measure
+    idx = measure.SnapIndex([(400, 100, "end")], [(100, 100, 400, 100), (400, 100, 400, 300)])
+    assert idx.find(397, 103, 4) == (400, 100, "end")  # 4.2 from the corner, 3 from a line
+    assert idx.find(300, 103, 4)[2] == "line"
+    assert idx.find(300, 110, 4) is None

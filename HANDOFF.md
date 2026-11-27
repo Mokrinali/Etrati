@@ -141,7 +141,7 @@ powershell -File scripts\get_tessdata.ps1
 - მასშტაბი გვერდზე: `features._op_scale` → გვერდის `/VP` (`/Measure /RL`, სტანდარტი, Acrobat/Bluebeam) + `/ETRATIscale` (JSON). `scale()` სხვა პროგრამის `/VP`-საც კითხულობს.
 - გაზომვა: `_op_measure` (distance/path/area) → Line/PolyLine/Polygon ანოტაცია `/IT …Dimension`, `/Measure`, `/ETRATIkind`, `/ETRATInote`; გამოსახულებას (წარწერით, ქართული შრიფტის ქვეჯგუფით) ხატავს `_draw_measure`. მასშტაბის შეცვლა თავიდან ითვლის. ფორმულები: `furceli/measure.py`.
 - ფანჯარა: ხელსაწყოები `m_distance`/`m_path`/`m_area` (+ `m_calibrate`), `view._measure_*` (Shift 45°, Enter/ორმაგი, Backspace, Esc, ცოცხალი მნიშვნელობა), `measure_ui.ScaleDialog` (1:N / ცნობილი ზომით, `DRAW`), `MeasureList` (+ Excel). ტესტები `tests/test_measure.py`.
-- შემდეგი (შეთანხმებით): წერტილის „მიწებება“ ნახაზის ხაზების ბოლოებზე/გადაკვეთებზე (snap).
+- ✅ მიწებება (snap, 2026-11-27): `features.snaps` (გვერდის ხაზების ბოლოები, გადაკვეთები ბადით — `measure.crossings`, ხაზები), `measure.SnapIndex` (ბოლო/გადაკვეთა 1.5×-ით უფრო შორიდან, ვიდრე ხაზი; 8 ეკრანული პიქსელი), `view._measure_point` (Alt — გარეშე), მენიუ „მიწებება ხაზებზე“ (`settings` „snap“).
 
 ## მცირე გაუმოწმებელი ნარჩენები
 

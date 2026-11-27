@@ -79,3 +79,101 @@ def label_place(kind, pts):
         return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)), None
     a, b = max(zip(pts, pts[1:]), key=lambda s: math.dist(*s))
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), (a, b)  # beside this piece
+
+
+# -- snapping to a drawing's own lines ------------------------------------------------------
+MAX_SEGMENTS = 20000
+MAX_CROSSINGS = 50000
+
+
+def _cross(a, b, c, d):
+    """Where segment ab crosses cd inside both (not at their ends), or None."""
+    r = (b[0] - a[0], b[1] - a[1])
+    s = (d[0] - c[0], d[1] - c[1])
+    den = r[0] * s[1] - r[1] * s[0]
+    if abs(den) < 1e-9:
+        return None
+    t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den
+    u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den
+    if 1e-6 < t < 1 - 1e-6 and 1e-6 < u < 1 - 1e-6:
+        return (a[0] + t * r[0], a[1] + t * r[1])
+    return None
+
+
+def _cells(a, b, size):
+    """The grid cells a segment passes through (walked along it in quarter cells)."""
+    n = int(max(abs(b[0] - a[0]), abs(b[1] - a[1])) / size * 4) + 1
+    return {(int((a[0] + (b[0] - a[0]) * i / n) // size), int((a[1] + (b[1] - a[1]) * i / n) // size))
+            for i in range(n + 1)}
+
+
+def crossings(segments, size):
+    """Points where straight segments cross, found cell by cell (a grid, not every pair)."""
+    grid = {}
+    for i, (a, b) in enumerate(segments):
+        for cell in _cells(a, b, size):
+            grid.setdefault(cell, []).append(i)
+    out, seen = [], set()
+    for idx in grid.values():
+        for n, i in enumerate(idx):
+            for j in idx[n + 1:]:
+                if (i, j) in seen:
+                    continue
+                seen.add((i, j))
+                p = _cross(*segments[i], *segments[j])
+                if p is not None:
+                    out.append(p)
+                    if len(out) >= MAX_CROSSINGS:
+                        return out
+    return out
+
+
+class SnapIndex:
+    """What a point may snap to near the mouse: ends first, then crossings, then a line."""
+
+    def __init__(self, points, segments, size=24.0):
+        self.size = size
+        self.points, self.segments = points, segments
+        self._pgrid, self._sgrid = {}, {}
+        for i, (x, y, _k) in enumerate(points):
+            self._pgrid.setdefault((int(x // size), int(y // size)), []).append(i)
+        for i, (x0, y0, x1, y1) in enumerate(segments):
+            for cell in _cells((x0, y0), (x1, y1), size):
+                self._sgrid.setdefault(cell, []).append(i)
+
+    def _near(self, grid, x, y, tol):
+        r = int(tol // self.size) + 1
+        cx, cy = int(x // self.size), int(y // self.size)
+        found = set()
+        for gx in range(cx - r, cx + r + 1):
+            for gy in range(cy - r, cy + r + 1):
+                found.update(grid.get((gx, gy), ()))
+        return found
+
+    POINT_PULL = 1.5  # ends and crossings pull from further than a line: a corner wins
+
+    def find(self, x, y, tol):
+        """(x, y, kind) or None; kind: end, cross or line."""
+        best = {}
+        reach = tol * self.POINT_PULL
+        for i in self._near(self._pgrid, x, y, reach):
+            px, py, kind = self.points[i]
+            d = math.hypot(px - x, py - y)
+            if d <= reach and (kind not in best or d < best[kind][0]):
+                best[kind] = (d, (px, py, kind))
+        for kind in ("end", "cross"):
+            if kind in best:
+                return best[kind][1]
+        near = None
+        for i in self._near(self._sgrid, x, y, tol):
+            x0, y0, x1, y1 = self.segments[i]
+            dx, dy = x1 - x0, y1 - y0
+            n = dx * dx + dy * dy
+            if n < 1e-9:
+                continue
+            t = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / n))
+            px, py = x0 + t * dx, y0 + t * dy
+            d = math.hypot(px - x, py - y)
+            if d <= tol and (near is None or d < near[0]):
+                near = (d, (px, py, "line"))
+        return near[1] if near else None
