@@ -784,8 +784,9 @@ def upright(img, languages):
         got = {q: _reads(turn(part, q), languages) for q in pair}
         shares.update({q: got[q][1] for q in pair})
         a, b = sorted(pair, key=lambda q: -got[q][0])
-        if got[a][0] >= 40 and got[a][1] > .7 and got[a][1] - got[b][1] > .2 \
-                and got[a][0] > 1.4 * got[b][0]:
+        (sa, ra), (sb, rb) = got[a], got[b]
+        # clean text clearly ahead, or a phone photo (reads worse) twice ahead
+        if sa >= 40 and ra - rb > .2 and (ra > .7 and sa > 1.4 * sb or sa > 2 * sb):
             return a
     # not settled by a few lines: the whole page, every likely way
     scores = {}
