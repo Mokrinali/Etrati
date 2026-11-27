@@ -723,3 +723,51 @@ def test_tile_budget_after_a_tab_was_closed(win, tmp_path):  # noqa: F811
     assert v._tile_bytes == sum(t.sizeInBytes() for t in v._tiles.values())
     assert gone not in view._VIEWS or sum(x._tile_bytes for x in view._VIEWS) <= view.TOTAL_BYTES
     del gone
+
+
+def list_field(path, multi, choices, value, top=None):
+    d = pymupdf.open()
+    p = d.new_page()
+    w = pymupdf.Widget()
+    w.field_name, w.rect = "L", pymupdf.Rect(100, 100, 300, 160)
+    w.field_type = pymupdf.PDF_WIDGET_TYPE_LISTBOX
+    w.choice_values, w.field_value = choices, value
+    if multi:
+        w.field_flags = pymupdf.PDF_CH_FIELD_IS_MULTI_SELECT
+    p.add_widget(w)
+    if top is not None:
+        x = next(p.widgets()).xref
+        d.xref_set_key(x, "TI", str(top))
+    d.save(str(path))
+    return str(path)
+
+
+def _rows(page, n, top=0):
+    """Is each shown row of the list (100..160, rows of 14.4 pt from y 101) coloured?"""
+    pix = page.get_pixmap(dpi=72, annots=True)
+    return [pix.pixel(296, int(101 + (i - top) * 14.4 + 4)) != (255, 255, 255)
+            for i in range(top, n)]
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_a_list_keeps_its_choices_on_the_page_after_filling(tmp_path, multi):
+    # MuPDF redrew the list without its text: it looked empty once something was chosen.
+    from test_features import engine, saved
+    items = ["Alpha", "ბეტა", "Gamma"]
+    e = engine(list_field(tmp_path / "l.pdf", multi, items, "Alpha"))
+    e.apply(("fill", 0, 0, ["Gamma", "Alpha"] if multi else "Gamma"))
+    for d in (e.doc, saved(e, tmp_path)):
+        shown = "".join(d[0].get_text().split())
+        assert all(x in shown for x in items)
+        assert _rows(d[0], 3) == ([True, False, True] if multi else [False, False, True])
+
+
+def test_a_scrolled_list_colours_only_what_is_shown(tmp_path):
+    from test_features import engine, saved
+    items = [f"item {i}" for i in range(8)]
+    e = engine(list_field(tmp_path / "l.pdf", True, items, "item 0", top=3))
+    e.apply(("fill", 0, 0, ["item 1", "item 4"]))
+    d = saved(e, tmp_path)
+    shown = "".join(d[0].get_text().split())
+    assert "item3" in shown and "item1" not in shown  # it starts at row 3
+    assert _rows(d[0], 6, top=3) == [False, True, False]  # rows 3, 4, 5

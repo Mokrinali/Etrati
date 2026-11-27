@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import heapq
+import io
 import itertools
 import os
+import pickle
 import multiprocessing as mp
 import threading
 import time
@@ -25,6 +27,22 @@ LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
         "scan_count": 300.0, "scan_preview": 180.0, "page_texts": 300.0, "mentions": 300.0}
 MAX_RESTARTS = 5             # in a row, without a single success between them
 ALWAYS_TRY = {"save", "export", "replay", "open", "pdfa"}  # the user's work depends on these
+
+
+MAX_REPLY = 1 << 29  # a reply larger than this is no answer of an engine that works
+OFFICE = {"winword.exe", "excel.exe", "powerpnt.exe", "msedge.exe"}
+
+
+class _Plain(pickle.Unpickler):
+    """Reads only plain data: numbers, text, bytes, lists, tuples, dicts, sets. A reply of the
+    engine (the side a bad PDF may take over) can name no class or function to call."""
+
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError(f"{module}.{name}")
+
+
+def plain(data: bytes):
+    return _Plain(io.BytesIO(data)).load()
 
 
 class FileChanged(Exception):
@@ -186,6 +204,21 @@ class EngineClient(QObject):
         except OSError:
             pass  # tidying up must not stop the work
 
+    def _own(self, value) -> bool:
+        """A program the engine says it started: ended with it later, so it must really be
+        its own (its child), or Office and Edge that the helper starts through COM."""
+        import psutil
+        try:
+            pid, started = int(value[0]), float(value[1])
+            p = psutil.Process(pid)
+            if abs(p.create_time() - started) > 1:
+                return False
+            if self._proc is not None and any(q.pid == self._proc.pid for q in p.parents()):
+                return True
+            return self._serve is not worker_serve and p.name().lower() in OFFICE
+        except (TypeError, ValueError, IndexError, KeyError, psutil.Error):
+            return False
+
     def _stop_helpers(self):
         """End an invisible Office or Edge that a killed engine left behind."""
         import psutil
@@ -210,9 +243,20 @@ class EngineClient(QObject):
                 dead = self._proc is not None and not self._proc.is_alive()
                 if (dead and not self._conn.poll(0)) or time.monotonic() >= end:
                     raise EOFError
-            status, value = self._conn.recv()
+            try:
+                reply = plain(self._conn.recv_bytes(MAX_REPLY))
+            except (pickle.UnpicklingError, ValueError, TypeError, AttributeError,
+                    IndexError, MemoryError) as e:
+                raise EOFError("not a reply") from e
+            if not (isinstance(reply, tuple) and len(reply) == 2
+                    and reply[0] in ("ok", "err", "started", "ended")):
+                raise EOFError("not a reply")
+            status, value = reply
+            if status == "err" and not isinstance(value, str):
+                raise EOFError("not a reply")
             if status == "started":
-                self._helpers.append(value)
+                if self._own(value):
+                    self._helpers.append(tuple(value))
             elif status == "ended":
                 self._helpers = [h for h in self._helpers if h != value]
             else:

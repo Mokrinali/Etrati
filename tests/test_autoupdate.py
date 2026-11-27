@@ -43,6 +43,7 @@ def test_latest_names_the_zip_to_download(monkeypatch):
 def test_a_release_without_a_zip_can_only_be_opened_in_the_browser(monkeypatch):
     import sys
     monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updates, "looks_installed", lambda folder: True)  # a clean install
     monkeypatch.setattr(updates, "_open", lambda req, timeout: io.BytesIO(
         json.dumps(_release(asset=False)).encode()))
     got = updates.latest()
@@ -198,3 +199,74 @@ def test_a_busy_folder_is_explained_in_words(tmp_path, monkeypatch):
     assert not updates.install(str(new), str(target), pid=0, version="9.1.0", start=lambda c: None)
     assert "სხვა პროგრამა იყენებს" in updates.read_result(str(target))["error"]
     assert (target / "ETRATI.exe").read_text() == "old"
+
+
+# -- review 2026-11-27: the folder may hold more than ETRATI; a failed copy keeps the old one --
+def test_a_folder_with_other_files_is_never_replaced(tmp_path):
+    target, new = _install_tree(tmp_path)
+    (target / "my contract.pdf").write_text("the user's own")
+    started = []
+    assert not updates.install(str(new), str(target), pid=0, version="9.1.0",
+                               start=lambda c: started.append(c))
+    assert (target / "my contract.pdf").exists() and (target / "ETRATI.exe").read_text() == "old"
+    assert not (tmp_path / "apps" / "ETRATI.old").exists()
+    assert "სხვა ფაილებიც" in updates.read_result(str(target))["error"]
+    assert not updates.looks_installed(str(target))
+
+
+def test_only_a_plain_install_is_offered_the_update(tmp_path, monkeypatch):
+    import sys
+    target, _new = _install_tree(tmp_path)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updates, "install_target", lambda: str(target))
+    assert updates.can_install({"asset": "https://x/a.zip"})
+    (target / "notes.txt").write_text("x")
+    assert not updates.can_install({"asset": "https://x/a.zip"})  # the browser instead
+
+
+def test_tidy_never_deletes_a_folder_that_is_not_etrati(tmp_path):
+    target, _new = _install_tree(tmp_path)
+    stray = tmp_path / "apps" / "ETRATI.old"
+    stray.mkdir()
+    (stray / "photo.jpg").write_text("x")
+    updates.tidy(str(target))
+    assert (stray / "photo.jpg").exists()
+
+
+def test_the_old_folder_is_moved_only_after_the_new_one_is_complete(tmp_path, monkeypatch):
+    target, new = _install_tree(tmp_path)
+    seen = []
+    real = updates.os.rename
+
+    def rename(a, b):
+        seen.append((os.path.basename(a), os.path.basename(b),
+                     os.path.exists(os.path.join(str(target) + ".new", "ETRATI.exe"))))
+        return real(a, b)
+    monkeypatch.setattr(updates.os, "rename", rename)
+    assert updates.install(str(new), str(target), pid=0, version="9.1.0", start=lambda c: None)
+    assert seen[0] == ("ETRATI", "ETRATI.old", True)  # the copy was whole before anything moved
+    assert seen[1][:2] == ("ETRATI.new", "ETRATI")
+
+
+def test_added_ocr_languages_survive_an_update(tmp_path):
+    target, new = _install_tree(tmp_path)
+    for root, names in ((target, ["kat", "eng", "deu"]), (new, ["kat", "eng"])):
+        d = root / "_internal" / "data" / "tessdata"
+        d.mkdir(parents=True)
+        for n in names:
+            (d / f"{n}.traineddata").write_text(f"{root.name}-{n}")
+    assert updates.install(str(new), str(target), pid=0, version="9.1.0", start=lambda c: None)
+    d = target / "_internal" / "data" / "tessdata"
+    assert (d / "deu.traineddata").read_text() == "ETRATI-deu"  # the user's own, kept
+    assert sorted(p.name for p in d.iterdir()) == ["deu.traineddata", "eng.traineddata",
+                                                   "kat.traineddata"]
+
+
+def test_a_failed_update_reopens_the_files_too(tmp_path, monkeypatch):
+    target, new = _install_tree(tmp_path)
+    monkeypatch.setattr(updates.shutil, "copytree",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    started = []
+    updates.install(str(new), str(target), pid=0, version="9.1.0", reopen=["C:/a.pdf"],
+                    start=lambda c: started.append(c))
+    assert started == [[str(target / "ETRATI.exe"), "C:/a.pdf"]]

@@ -108,6 +108,22 @@ def test_upside_down_photos_are_turned(k):
     assert scan.upright(flat, "kat+eng") == 2
 
 
+def test_a_phone_photo_is_settled_by_a_few_lines(page, monkeypatch):
+    # Real phone photos read worse (half the words plausible) but one way still wins
+    # clearly: the whole page must not be read four times (that took a minute per photo).
+    x = page[0].get_pixmap(dpi=130)
+    img = np.frombuffer(x.samples, np.uint8).reshape(x.height, x.stride)[:, :x.width * 3].reshape(
+        x.height, x.width, 3)
+    seen = []
+
+    def reads(part, languages):
+        seen.append(part.shape)
+        return [(283, .50), (120, .26), (135, .38), (119, .34)][len(seen) - 1]
+    monkeypatch.setattr(scan, "_reads", reads)
+    monkeypatch.setattr(scan, "_profile", lambda ink, a: float(ink.shape[0]))  # a table: no clear axis
+    assert scan.upright(img, "kat+eng") == 0 and len(seen) == 2
+
+
 def test_dense_finds_the_writing():
     ink = np.zeros((400, 300), np.uint8)
     ink[300:360, 20:200] = 255

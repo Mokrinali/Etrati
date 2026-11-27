@@ -192,6 +192,7 @@ def test_5_hidden_tabs_give_memory_back(win, doc, tmp_path):  # noqa: F811
 
 def test_5_text_of_far_pages_is_forgotten(doc):
     v = doc.view
+    wait(lambda: v.page in v.chars)  # the text comes after the picture of the page
     for p in range(5000):
         v.on_done(("chars", 100 + p, v.rev), [])
     assert len(v.chars) <= 400 and v.page in v.chars

@@ -86,8 +86,33 @@ class Cancelled(Exception):
 
 
 def can_install(found) -> bool:
-    """Only a packed program installs by itself, and only from a release with a zip."""
-    return bool(getattr(sys, "frozen", False) and found and found.get("asset"))
+    """Only a packed program installs by itself, only from a release with a zip, and only into
+    a folder that holds ETRATI and nothing else (the whole folder is replaced)."""
+    return bool(getattr(sys, "frozen", False) and found and found.get("asset")
+                and looks_installed(install_target()))
+
+
+def looks_installed(folder) -> bool:
+    """ETRATI.exe and its _internal folder, nothing else: a folder that may be replaced."""
+    try:
+        names = set(os.listdir(folder))
+    except OSError:
+        return False
+    return EXE in names and names <= {EXE, "_internal"}
+
+
+LANGUAGES = os.path.join("_internal", "data", "tessdata")
+
+
+def _keep_languages(old, new):
+    """OCR languages the person added to the old program come along."""
+    src, dst = os.path.join(old, LANGUAGES), os.path.join(new, LANGUAGES)
+    if not os.path.isdir(src):
+        return
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        if name.endswith(".traineddata") and not os.path.exists(os.path.join(dst, name)):
+            shutil.copy2(os.path.join(src, name), os.path.join(dst, name))
 
 
 def install_target() -> str:
@@ -202,28 +227,38 @@ def install(new, target, pid, version, reopen=(), start=_start) -> bool:
     """Run by the new program: put it in place of `target` and start it (or the old one)."""
     _wait_for(pid)
     target = os.path.abspath(target)
-    old = target + ".old"
-    moved = False
+    old, fresh = target + ".old", target + ".new"
+    opened = [p for p in reopen if p]
+    made = False
     try:
-        if os.path.exists(old):
-            _retry(lambda: shutil.rmtree(old))
+        # The whole folder is replaced: only one that holds ETRATI and nothing else.
+        if not looks_installed(target):
+            raise UpdateError("ETRATI-ის საქაღალდეში სხვა ფაილებიცაა; ახალი ვერსია ჩამოტვირთეთ ხელით")
+        for leftover in (old, fresh):  # of an earlier try
+            if os.path.exists(leftover):
+                if not looks_installed(leftover):
+                    raise UpdateError(f"საქაღალდე {os.path.basename(leftover)} უკვე არსებობს")
+                _retry(lambda p=leftover: shutil.rmtree(p))
+        # The new program is made whole beside the old one; only then two quick renames.
+        made = True
+        shutil.copytree(new, fresh)
+        _keep_languages(target, fresh)
         _retry(lambda: os.rename(target, old))
-        moved = True
-        shutil.copytree(new, target)
+        try:
+            _retry(lambda: os.rename(fresh, target))
+        except OSError:
+            _retry(lambda: os.rename(old, target))
+            raise
     except Exception as e:
-        if moved:
-            shutil.rmtree(target, ignore_errors=True)
-            try:
-                _retry(lambda: os.rename(old, target))
-            except OSError:
-                pass
+        if made:
+            shutil.rmtree(fresh, ignore_errors=True)  # only what this try made
         why = ("ETRATI-ის საქაღალდეს სხვა პროგრამა იყენებს ან მასში ჩაწერის უფლება არ გაქვთ"
                if isinstance(e, PermissionError) else str(e))
         _write_result({"ok": False, "version": version, "error": why}, target)
-        start([os.path.join(target, EXE)])
+        start([os.path.join(target, EXE)] + opened)
         return False
     _write_result({"ok": True, "version": version}, target)
-    start([os.path.join(target, EXE)] + [p for p in reopen if p])
+    start([os.path.join(target, EXE)] + opened)
     return True
 
 
@@ -238,7 +273,10 @@ def tidy(target):
 
     The result is told once: the folder that holds it goes with the rest."""
     result = read_result(target)
-    shutil.rmtree(os.path.abspath(target) + ".old", ignore_errors=True)
+    for leftover in (".old", ".new"):  # only folders of ETRATI itself, never anything else
+        folder = os.path.abspath(target) + leftover
+        if looks_installed(folder):
+            shutil.rmtree(folder, ignore_errors=True)
     shutil.rmtree(stage_root(target), ignore_errors=True)
     return result
 

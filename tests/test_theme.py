@@ -60,3 +60,68 @@ def test_message_icons_in_coloured_circles(app):  # noqa: F811
     theme.apply_theme(a, "light")
     img = a.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(36, 36).toImage()
     assert img.pixelColor(img.width() // 2, 3).alpha() > 200
+
+
+def _footer_of(dlg):
+    from PySide6.QtWidgets import QApplication, QFrame
+    dlg.show()
+    for _ in range(5):
+        QApplication.processEvents()
+    return dlg.findChild(QFrame, "dialogFooter")
+
+
+def test_the_buttons_of_a_dialog_sit_on_a_band_of_their_own(app):  # noqa: F811
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+    theme.apply_theme(app, "light")
+    dlg = QDialog()
+    lay = QVBoxLayout(dlg)
+    text = QLabel("ტექსტი")
+    lay.addWidget(text)
+    box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    lay.addWidget(box)
+    dlg.resize(420, 200)
+    band = _footer_of(dlg)
+    assert band is not None and band.isVisible()
+    g = band.geometry()
+    assert g.left() == 0 and g.width() == dlg.width() and g.bottom() == dlg.height() - 1
+    assert text.geometry().bottom() < g.top() <= box.geometry().top()  # the whole row, nothing above
+    img = dlg.grab().toImage()
+    assert img.pixelColor(3, dlg.height() - 3).name() == theme.color("surface-200").name()
+    assert img.pixelColor(3, 3).name() == theme.color("surface-100").name()
+    dlg.resize(500, 260)  # follows the dialog
+    _footer_of(dlg)
+    assert band.geometry().width() == 500 and band.geometry().bottom() == 259
+    dlg.close()
+
+
+def test_message_boxes_have_the_band_too(app):  # noqa: F811
+    from PySide6.QtWidgets import QMessageBox
+    theme.apply_theme(app, "light")
+    box = QMessageBox(QMessageBox.Icon.Question, "კითხვა", "გავაგრძელო?")
+    box.addButton("კი", QMessageBox.ButtonRole.AcceptRole)
+    band = _footer_of(box)
+    assert band is not None and band.geometry().bottom() == box.height() - 1
+    box.close()
+
+
+def test_a_dialog_without_buttons_has_no_band(app):  # noqa: F811
+    from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
+    theme.apply_theme(app, "light")
+    dlg = QDialog()
+    QVBoxLayout(dlg).addWidget(QLabel("მხოლოდ ტექსტი"))
+    assert _footer_of(dlg) is None or not _footer_of(dlg).isVisible()
+    dlg.close()
+
+
+def test_the_primary_button_of_a_message_box_is_filled(app):  # noqa: F811
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    theme.apply_theme(app, "light")
+    box = QMessageBox(QMessageBox.Icon.Question, "კითხვა", "გავაგრძელო?")
+    yes = theme.variant(box.addButton("კი", QMessageBox.ButtonRole.AcceptRole), "primary")
+    box.addButton("არა", QMessageBox.ButtonRole.RejectRole)
+    box.show()
+    for _ in range(5):
+        QApplication.processEvents()
+    img = yes.grab().toImage()
+    assert img.pixelColor(img.width() // 2, 4).name() == theme.color("brand").name()
+    box.close()

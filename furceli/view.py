@@ -52,7 +52,16 @@ def _shared(name):
 
 
 def to_image(value) -> QImage:
-    w, h, stride, data = value
+    """A picture the engine rendered. Its numbers are checked first: an engine a bad PDF took
+    over must not make the window read past the end of the bytes (an empty picture instead)."""
+    try:
+        w, h, stride, data = value
+    except (TypeError, ValueError):
+        return QImage()
+    if not (all(type(v) is int for v in (w, h, stride)) and isinstance(data, bytes)
+            and 0 < w <= 1 << 15 and 0 < h <= 1 << 15 and stride >= 3 * w
+            and len(data) >= stride * (h - 1) + 3 * w):
+        return QImage()
     return QImage(data, w, h, stride, QImage.Format.Format_RGB888).copy()
 
 
