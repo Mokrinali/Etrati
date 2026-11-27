@@ -751,8 +751,11 @@ class CompareDialog(QDialog):
             at = c["new_at"][0] if c["new_at"] else (c["page"], None)
             it.setData(Qt.ItemDataRole.UserRole, (at[0], at[1]))
             self.list.addItem(it)
-        for p in result["pictures"]:
-            it = QListWidgetItem(f"გვ. {p + 1} · გამოსახულება განსხვავდება")
+        worded = {p for c in result["changes"] for p, _ in c["new_at"]}
+        for p in result["pictures"]:  # beside changed words the drawing may have changed too
+            what = ("ნახაზიც განსხვავდება (ტექსტის გარდა)" if p in worded
+                    else "გამოსახულება განსხვავდება")
+            it = QListWidgetItem(f"გვ. {p + 1} · {what}")
             it.setData(Qt.ItemDataRole.UserRole, (p, None))
             self.list.addItem(it)
         if not self.list.count():

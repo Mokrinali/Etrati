@@ -17,6 +17,7 @@ from . import APP_NAME, DATA_ID, __version__, files, theme
 from .ai import AiPanel
 from .batch import BatchDialog
 from .client import EngineClient, TaskError, finish_all, run_task
+from .compare_view import CompareFilesDialog, CompareView
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
 from .helper import convert_first, tidy
@@ -228,7 +229,8 @@ class MainWindow(QMainWindow):
              ("underline", "ხაზგასმა", 0xE8DC), ("strikeout", "გადახაზვა", 0xEDE0),
              ("note", "შენიშვნა", 0xE90A), ("text", "ტექსტი", 0xE8D2), ("ink", "ხატვა", 0xED63),
              ("rect", "ოთხკუთხედი", 0xE7FB), ("ellipse", "ელიფსი", 0xEA3A),
-             ("line", "ხაზი", 0xE738), ("arrow", "ისარი", 0xE72A), ("stamp", "შტამპი", 0xE8FB),
+             ("line", "ხაზი", 0xE738), ("arrow", "ისარი", 0xE72A), ("cloud", "ღრუბელი", 0xE753),
+             ("stamp", "შტამპი", 0xE8FB),
              ("image", "სურათი", 0xEB9F), ("edit", "ტექსტის შეცვლა", 0xE70F),
              ("redact", "დასაფარის მონიშვნა", 0xE75C), ("field", "ფორმის ველი", 0xE9D5)]
 
@@ -265,6 +267,14 @@ class MainWindow(QMainWindow):
             x.set_tool("signbox"), x.status.emit("დახატეთ ჩარჩო ხელმოწერისთვის"))))
         self.a_verify = act("ხელმოწერების შემოწმება", d(lambda x: x.verify()))
         self.a_compare = act("შედარება სხვა ვერსიასთან…", d(lambda x: x.compare_with()))
+        self.a_cmp_files = act("ორი ფაილის შედარება…", self.compare_files, needs_doc=False)
+        self.a_link = act("ერთად მოძრაობა", self._set_linked, checkable=True, needs_doc=False)
+        self.a_link.setChecked(True)
+        self.a_split_v = act("ვერტიკალურად", d(lambda x: x.split_panes(Qt.Orientation.Horizontal)))
+        self.a_split_v.setToolTip("ორი პანელი გვერდიგვერდ")
+        self.a_split_h = act("ჰორიზონტალურად", d(lambda x: x.split_panes(Qt.Orientation.Vertical)))
+        self.a_split_h.setToolTip("ორი პანელი ერთმანეთის ქვეშ")
+        self.a_split_off = act("გაუქმება", d(lambda x: x.unsplit()))
         self.a_create = act("PDF სხვა ფაილებისგან…", self.create_pdf, "Ctrl+N", 0xE8A5,
                             needs_doc=False)
         self.a_scan = act("სკანის გასუფთავება…", self.scan, "Ctrl+Shift+N", 0xE8FE,
@@ -485,7 +495,7 @@ class MainWindow(QMainWindow):
         self._fill_page_menu(g)
         c = mb.addMenu("კომენტარი")
         for name in ("highlight", "underline", "strikeout", "note", "text", "ink", "rect",
-                     "ellipse", "line", "arrow", "stamp"):
+                     "ellipse", "line", "arrow", "cloud", "stamp"):
             c.addAction(self.tool_acts[name])
         c.addSeparator()
         c.addActions([self.a_sigpic, self.a_color, self.a_author, self.a_flat])
@@ -502,7 +512,13 @@ class MainWindow(QMainWindow):
         z.addSeparator()
         z.addActions([self.a_sign, self.a_signbox, self.a_verify])
         t = mb.addMenu("ხელსაწყოები")
-        t.addActions([self.a_scan, self.a_compare, self.a_ai])
+        t.addActions([self.a_scan, self.a_ai])
+        ch = mb.addMenu("ჩართალა")
+        ch.addActions([self.a_cmp_files, self.a_compare])
+        ch.addSeparator()
+        panes = ch.addMenu("ეკრანის გაყოფა")
+        panes.addActions([self.a_split_v, self.a_split_h, self.a_split_off])
+        ch.addAction(self.a_link)
         v = mb.addMenu("ხედი")
         v.addActions([self.a_in, self.a_out, self.a_100, self.a_width, self.a_page])
         v.addSeparator()
@@ -540,11 +556,14 @@ class MainWindow(QMainWindow):
         self.swatches.update()
         self.welcome.recolor()
         self.update_banner.recolor()
+        for i in range(self.tabs.count()):
+            if isinstance(self.tabs.widget(i), CompareView):
+                self.tabs.widget(i).recolor()
         for d in self._docs():
             d.banner.recolor()
             if getattr(d, "ai", None) is not None:
                 d.ai.recolor()
-            d.view.viewport().update()
+            d.update_views()
             for w in (getattr(d, "list", None), getattr(d, "grid", None)):
                 if w is not None:
                     w.viewport().update()
@@ -594,7 +613,26 @@ class MainWindow(QMainWindow):
             self.open_file(out)
 
     def _docs(self):
-        return [self.tabs.widget(i) for i in range(self.tabs.count())]
+        """The open documents; a comparison tab is not one."""
+        tabs = map(self.tabs.widget, range(self.tabs.count()))
+        return [w for w in tabs if isinstance(w, DocView)]
+
+    # -- ჩართალა -----------------------------------------------------------
+    def compare_files(self):
+        """Two files side by side, and what changed between them. Neither is changed."""
+        got = CompareFilesDialog.ask(self)
+        if not got:
+            return
+        cv = CompareView(*got)
+        i = self.tabs.addTab(cv, "შედარება: " + cv.title)
+        self.tabs.setTabToolTip(i, f"ძველი: {cv.old_path}\nახალი: {cv.new_path}")
+        self.tabs.setCurrentIndex(i)
+        self.stack.setCurrentIndex(1)
+
+    def _set_linked(self, on):
+        w = self.tabs.currentWidget()
+        if hasattr(w, "set_linked"):
+            w.set_linked(on)
 
     def _welcome(self):
         self.welcome = WelcomeScreen([
@@ -628,9 +666,9 @@ class MainWindow(QMainWindow):
 
     def open_file(self, path):
         path = os.path.abspath(path)
-        for i in range(self.tabs.count()):
-            if os.path.normcase(self.tabs.widget(i).path) == os.path.normcase(path):
-                self.tabs.setCurrentIndex(i)
+        for d in self._docs():
+            if os.path.normcase(d.path) == os.path.normcase(path):
+                self.tabs.setCurrentWidget(d)
                 return
         try:
             start = int(self._positions().get(os.path.normcase(path), 0))
@@ -644,9 +682,9 @@ class MainWindow(QMainWindow):
         doc.closed.connect(lambda msg: self._open_failed(doc, msg))
         doc.status.connect(lambda m, d=doc: None if m == d.banner.message()
                            else self.statusBar().showMessage(m, 8000))  # once is enough
-        doc.view.pageChanged.connect(lambda *_: self._sync())
-        doc.view.zoomChanged.connect(lambda *_: self._sync())
-        doc.view.hovered.connect(lambda t: self.link_label.setText(
+        doc.pageChanged.connect(lambda *_: self._sync())  # of the pane worked in
+        doc.zoomChanged.connect(lambda *_: self._sync())
+        doc.hovered.connect(lambda t: self.link_label.setText(
             t if len(t) <= 120 else t[:120] + "…"))
         doc.changed.connect(self._sync)
         doc.pageMenu.connect(self._page_menu)
@@ -691,6 +729,8 @@ class MainWindow(QMainWindow):
             self.close_tab(i, ask=False)
 
     def _may_close(self, doc) -> bool:
+        if isinstance(doc, CompareView):
+            return True  # it changes nothing
         if not doc.dirty and not doc._busy:
             if not doc.view.marks:
                 return True
@@ -752,7 +792,7 @@ class MainWindow(QMainWindow):
         return v if isinstance(v, dict) else {}
 
     def _remember(self, doc):
-        if not doc.loaded:
+        if not isinstance(doc, DocView) or not doc.loaded:
             return
         pos = self._positions()
         key = os.path.normcase(doc.path)
@@ -766,15 +806,23 @@ class MainWindow(QMainWindow):
     def _sync(self, *_):
         doc = self.doc
         on = bool(doc and doc.loaded)
-        for a in self._doc_actions:
-            a.setEnabled(on or (a is self.a_close and doc is not None))
+        for a in self._doc_actions:  # any tab can be closed, a comparison too
+            a.setEnabled(on or (a is self.a_close and self.tabs.currentWidget() is not None))
         self.page_box.setEnabled(on)
         self.zoom_box.setEnabled(on)
         self.page_box.blockSignals(True)
         self.a_two.blockSignals(True)
-        for i, d in enumerate(self._docs()):
+        for d in self._docs():
+            i = self.tabs.indexOf(d)
             self.tabs.setTabText(i, ("● " if d.dirty else "") + os.path.basename(d.path))
             self.tabs.setTabToolTip(i, d.path)
+        w = self.tabs.currentWidget()
+        two = isinstance(w, CompareView) or bool(on and doc.split_now)
+        self.a_link.setEnabled(two)
+        self.a_split_off.setEnabled(bool(on and doc.split_now))
+        self.a_link.blockSignals(True)
+        self.a_link.setChecked(getattr(w, "linked", True))
+        self.a_link.blockSignals(False)
         self.a_org.blockSignals(True)
         self.a_org.setChecked(bool(on and doc.organizing))
         self.a_org.blockSignals(False)
@@ -793,7 +841,7 @@ class MainWindow(QMainWindow):
             for a in self.a_gray_by:
                 a.setEnabled(doc.info["can_modify"])
             for name in ("highlight", "underline", "strikeout", "note", "text", "ink", "rect",
-                         "ellipse", "line", "arrow", "stamp"):
+                         "ellipse", "line", "arrow", "cloud", "stamp"):
                 self.tool_acts[name].setEnabled(doc.info["can_annotate"])
             self.a_redgo.setEnabled(doc.info["can_modify"] and bool(doc.view.marks))
             self.a_redclear.setEnabled(bool(doc.view.marks))

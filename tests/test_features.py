@@ -423,7 +423,8 @@ def test_compare(tmp_path):
     assert [(c["kind"], c["old"], c["new"]) for c in r["changes"]] == [
         ("replace", "100", "250"), ("delete", "წაშლილი სტრიქონი", "")]
     assert r["changes"][0]["new_at"][0][0] == 0
-    assert r["pictures"] == [1] and r["pages"] == (2, 2)
+    # page 0 changed its words: its picture is checked too (it used to be skipped)
+    assert r["pictures"] == [0, 1] and r["pages"] == (2, 2)
     same = engine(old).compare(old)
     assert not same["changes"] and not same["pictures"]
 

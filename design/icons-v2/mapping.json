@@ -320,5 +320,12 @@
   "label": "ქვემოთ",
   "current": "ტექსტი „▼ ქვემოთ“",
   "status": "new"
+ },
+ {
+  "file": "svg/cloud.svg",
+  "code": "window.py tool_acts['cloud']",
+  "label": "ღრუბელი",
+  "current": "",
+  "status": "new"
  }
 ]

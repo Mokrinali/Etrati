@@ -11,7 +11,7 @@ import weakref
 from collections import OrderedDict
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import QAbstractScrollArea
 
 from . import theme
@@ -30,6 +30,27 @@ GAP = 14  # logical px between pages
 _VIEWS: "weakref.WeakSet[PageView]" = weakref.WeakSet()  # every page view, for _share()
 
 
+class Shared:
+    """What the panes of one document have in common (ჩართალა: one document, two panes):
+    what is marked on the document, and the pen. Each pane keeps its own place and zoom, its
+    own selection and the shape being drawn in it."""
+
+    def __init__(self):
+        self.views: list = []              # the panes, the first one first
+        self.marks: dict[int, list] = {}   # pending redaction rectangles
+        self.hits: dict[int, list] = {}    # search results
+        self.current_hit = None            # (page, index)
+        self.diff: dict[int, list] = {}    # comparison highlights
+        self.frames: dict[int, list] = {}  # (rectangle, colour token, current) outlines
+        self.tool_color = theme.color("ink-pen")
+        self.tool_width = 2.0
+
+
+def _shared(name):
+    return property(lambda self: getattr(self.shared, name),
+                    lambda self, value: setattr(self.shared, name, value))
+
+
 def to_image(value) -> QImage:
     w, h, stride, data = value
     return QImage(data, w, h, stride, QImage.Format.Format_RGB888).copy()
@@ -45,10 +66,19 @@ class PageView(QAbstractScrollArea):
     toolDone = Signal(str, int, object)  # tool, page, shape data in page points
     clicked = Signal(int, object)      # plain click on a page (points)
     contextAt = Signal(int, object, object)  # page, point, global position
+    activated = Signal()               # this pane is the one being worked in
 
-    def __init__(self, client, thumbs, parent=None):
+    marks, hits, current_hit = _shared("marks"), _shared("hits"), _shared("current_hit")
+    diff, frames = _shared("diff"), _shared("frames")
+    tool_color, tool_width = _shared("tool_color"), _shared("tool_width")
+
+    def __init__(self, client, thumbs, parent=None, shared=None):
         super().__init__(parent)
         self.client, self.thumbs = client, thumbs
+        self.shared = shared or Shared()   # another pane of the same document shares it
+        self.shared.views.append(self)
+        self._wanted: dict = {}            # tiles this pane asked for last
+        self._near_text = (0, -1)          # pages whose text this pane may still want
         self.sizes: list = []
         self.can_copy = True
         self.zoom, self.fit = 1.0, "width"
@@ -63,8 +93,6 @@ class PageView(QAbstractScrollArea):
         self._bad: set = set()
         self.chars: dict[int, list] = {}
         self.links: dict[int, list] = {}
-        self.hits: dict[int, list] = {}
-        self.current_hit = None            # (page, index)
         self._sel_a = self._sel_b = None   # (page, caret)
         self._dragging = False
         self._press_link = None
@@ -74,12 +102,8 @@ class PageView(QAbstractScrollArea):
         self._crop = None                  # None, or [page, start point, end point]
         self.cropping = False
         self.tool = "select"
-        self.tool_color = theme.color("ink-pen")
-        self.tool_width = 2.0
         self._shape = None                 # [page, [points]] being drawn
         self.widgets: dict[int, list] = {}
-        self.marks: dict[int, list] = {}   # pending redaction rectangles
-        self.diff: dict[int, list] = {}    # comparison highlights
         self._stale: dict = {}             # last picture of a page that was just edited
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -97,8 +121,9 @@ class PageView(QAbstractScrollArea):
 
     lost_marks = 0
 
-    def reload(self, sizes, mapping, still=False):
-        """The document was edited. mapping: new page -> old page, or None."""
+    def reload(self, sizes, mapping, still=False, primary=True):
+        """The document was edited. mapping: new page -> old page, or None.
+        primary: the first pane also moves what all panes share (once, not once a pane)."""
         old = self._page
         old_rev, self.rev = self.rev, self.rev + 1
         same = (mapping is not None and list(sizes) == list(self.sizes)
@@ -117,18 +142,20 @@ class PageView(QAbstractScrollArea):
             store = getattr(self, name)
             setattr(self, name, {keep[p]: v for p, v in store.items() if p in keep})
         self._bad.clear()
-        self.hits, self.current_hit, self.diff = {}, None, {}
+        self.hits, self.current_hit, self.diff, self.frames = {}, None, {}, {}
         # Redaction marks follow their page. On an edited page they stay only when the
         # edit cannot have moved anything (the caller knows).
-        old_marks = {p: m for p, m in self.marks.items() if m}
-        self.marks = {}
-        for new, o in enumerate(mapping or ()):
-            if o in old_marks:
-                self.marks[new] = list(old_marks[o])
-            elif o < 0 and same and still and new in old_marks:
-                self.marks[new] = list(old_marks[new])
-        kept = {o if o >= 0 else new for new, o in enumerate(mapping or ()) if new in self.marks}
-        self.lost_marks = sum(len(m) for p, m in old_marks.items() if p not in kept)
+        if primary:
+            old_marks = {p: m for p, m in self.marks.items() if m}
+            self.marks = {}
+            for new, o in enumerate(mapping or ()):
+                if o in old_marks:
+                    self.marks[new] = list(old_marks[o])
+                elif o < 0 and same and still and new in old_marks:
+                    self.marks[new] = list(old_marks[new])
+            kept = {o if o >= 0 else new for new, o in enumerate(mapping or ())
+                    if new in self.marks}
+            self.lost_marks = sum(len(m) for p, m in old_marks.items() if p not in kept)
         self._sel_a = self._sel_b = None
         self._shape = None
         self.sizes = sizes
@@ -413,13 +440,19 @@ class PageView(QAbstractScrollArea):
                     if box.intersects(near):
                         key = ("tile", p, s, rot, tx, ty, self.rev)
                         wanted[key] = ((tx, ty, x1, y1), box.intersects(seen))
-        self.client.cancel(lambda k: k[0] == "tile" and k not in wanted)
+        # Another pane of the document asks the same engine: what it wants stays asked for.
+        self._wanted = wanted
+        others = [v for v in self.shared.views if v is not self]
+        self.client.cancel(lambda k: k[0] == "tile" and k not in wanted
+                           and not any(k in v._wanted for v in others))
         a, b = self._page - FAR_PAGES, self._page + FAR_PAGES
         rng = self._range()
         if rng:  # the selection's text is needed wherever it is
             a, b = min(a, rng[0][0]), max(b, rng[1][0])
+        self._near_text = (a, b)
+        spans = [v._near_text for v in self.shared.views]
         self.client.cancel(lambda k: k[0] in ("chars", "links", "widgets")
-                           and not a <= k[1] <= b)
+                           and not any(lo <= k[1] <= hi for lo, hi in spans))
         for key, (tile, visible) in wanted.items():
             if key in self._tiles:
                 self._tiles.move_to_end(key)
@@ -558,6 +591,9 @@ class PageView(QAbstractScrollArea):
                 if not w["readonly"] and w["kind"] != "other":
                     p.fillRect(self._doc_rect(pno, w["rect"]), theme.color("mark-field"))
             p.restore()
+            for rect, token, now in self.frames.get(pno, ()):
+                p.setPen(QPen(theme.color(token), (3 if now else 1.5) * self.dpr))
+                p.drawRect(self._doc_rect(pno, rect).adjusted(-2, -2, 2, 2))
             for rect in self.marks.get(pno, ()):
                 box = self._doc_rect(pno, rect)
                 p.fillRect(box, QColor(0, 0, 0, 70))
@@ -583,9 +619,10 @@ class PageView(QAbstractScrollArea):
             p.drawRect(r.adjusted(-1, -1, 0, 0))
 
     # -- tools -------------------------------------------------------------
-    BOX_TOOLS = {"text", "rect", "ellipse", "stamp", "image", "redact", "field", "signbox"}
+    BOX_TOOLS = {"text", "rect", "ellipse", "stamp", "image", "redact", "field", "signbox",
+                 "cloud"}
     LINE_TOOLS = {"line", "arrow"}
-    CLICK_TOOLS = {"note", "edit"}
+    CLICK_TOOLS = {"note", "edit", "point"}  # point: ჩართალა, aligning by hand
     TEXT_TOOLS = {"highlight", "underline", "strikeout"}
 
     def set_tool(self, name):
@@ -615,10 +652,29 @@ class PageView(QAbstractScrollArea):
             p.drawLine(a, b)
         elif self.tool == "ellipse":
             p.drawEllipse(QRectF(a, b).normalized())
+        elif self.tool == "cloud":
+            p.drawPath(self._cloud(QRectF(a, b).normalized(), 14 * self.dpr))
         else:
             p.setPen(QPen(self.tool_color, 1.5, Qt.PenStyle.DashLine))
             p.drawRect(QRectF(a, b).normalized())
         p.restore()
+
+    @staticmethod
+    def _cloud(r, step):
+        """A revision cloud round a rectangle, while it is being drawn: arcs bulging out."""
+        path = QPainterPath(r.topLeft())
+        corners = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft(), r.topLeft()]
+        for s, e in zip(corners, corners[1:]):  # clockwise: outside is to the left
+            dx, dy = e.x() - s.x(), e.y() - s.y()
+            n = max(1, round(math.hypot(dx, dy) / step))
+            for i in range(n):
+                x0, y0 = s.x() + dx * i / n, s.y() + dy * i / n
+                x1, y1 = s.x() + dx * (i + 1) / n, s.y() + dy * (i + 1) / n
+                length = math.hypot(x1 - x0, y1 - y0) or 1
+                out = length * .6
+                path.quadTo((x0 + x1) / 2 + (y1 - y0) / length * out,
+                            (y0 + y1) / 2 - (x1 - x0) / length * out, x1, y1)
+        return path
 
     def selection_quads(self):
         """{page: [quad, ...]} of the selected text; a quad is ul, ur, ll, lr as read."""
@@ -756,7 +812,12 @@ class PageView(QAbstractScrollArea):
         return any(c[0] <= q.x() <= c[2] and c[1] <= q.y() <= c[3]
                    for c, _ in self.chars.get(pno, ()))
 
+    def focusInEvent(self, e):
+        self.activated.emit()
+        super().focusInEvent(e)
+
     def mousePressEvent(self, e):
+        self.activated.emit()
         if e.button() != Qt.MouseButton.LeftButton or not self.sizes:
             return
         pt = e.position() * self.dpr

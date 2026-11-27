@@ -34,6 +34,8 @@
   --mark-error: #b00020;
   --mark-crop: #2f7de1;
   --mark-crop-fill: rgba(47,125,225,0.11);
+  --mark-diff-old: #d92d20;
+  --mark-diff-new: #12915a;
   --ink-pen: #d02020;
   --ink-signature: #10206a;
   --shadow-page: 0 1px 2px rgba(35,31,27,0.18), 0 4px 12px rgba(35,31,27,0.10);
@@ -75,6 +77,8 @@
   --mark-error: #b00020;
   --mark-crop: #2f7de1;
   --mark-crop-fill: rgba(47,125,225,0.11);
+  --mark-diff-old: #d92d20;
+  --mark-diff-new: #12915a;
   --ink-pen: #d02020;
   --ink-signature: #10206a;
   --shadow-page: 0 1px 2px rgba(0,0,0,0.6), 0 6px 18px rgba(0,0,0,0.45);

@@ -1,0 +1,33 @@
+<!-- @dsCard group="Documents" height=360 -->
+<!doctype html>
+<html lang="ka" data-theme="light">
+<head><meta charset="utf-8"><title>CompareView</title><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css"><script src="../bundle.js"></script>
+<style>
+.cv{display:flex;height:330px;background:var(--canvas)}
+.cv-pane{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+.cv-pane .et-muted{padding:4px 8px;background:var(--surface-100)}
+.cv-sheet{position:relative;margin:14px auto;width:220px;height:156px;background:var(--paper);box-shadow:var(--shadow-page)}
+.cv-sheet i{position:absolute;border:1px solid #222}
+.cv-old{position:absolute;border:1.5px solid var(--mark-diff-old)}
+.cv-new{position:absolute;border:1.5px solid var(--mark-diff-new)}
+.cv-now{border-width:3px}
+</style></head>
+<body>
+<div class="cv">
+<div class="cv-pane"><span class="et-muted">ძველი: გეგმა-v1.pdf</span>
+<div class="cv-sheet"><i style="left:20px;top:20px;width:60px;height:30px"></i><i style="left:140px;top:100px;width:40px;height:30px"></i>
+<b class="cv-old cv-now" style="left:136px;top:96px;width:48px;height:38px"></b></div></div>
+<div class="cv-pane"><span class="et-muted">ახალი: გეგმა-v2.pdf</span>
+<div class="cv-sheet"><i style="left:20px;top:20px;width:60px;height:30px"></i><i style="left:40px;top:90px;width:30px;height:30px;border-radius:50%;background:#222"></i>
+<b class="cv-new" style="left:36px;top:86px;width:38px;height:38px"></b></div></div>
+<div class="et-side" style="width:248px">
+<span class="et-muted">ცვლილებები</span>
+<span class="et-muted">ნაპოვნია 2 ცვლილება</span>
+<div class="et-hits"><div class="et-hit is-current">გვ. 1 · წაიშალა</div><div class="et-hit">გვ. 1 · დაემატა</div></div>
+<div class="et-row"><span class="et-btn">წინა</span><span class="et-btn">შემდეგი</span></div>
+</div>
+</div>
+<script>window.Etrati.icons();</script>
+<button onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'" style="position:fixed;right:8px;bottom:8px;z-index:9;font:12px sans-serif">თემა ☀/☾</button>
+</body>
+</html>

@@ -137,6 +137,30 @@ def main():
     check("edit and save", save)
     client.shutdown()
 
+    # -- ჩართალა: two drawings compared as pictures, OpenCV in the engine ------------------------
+    def visual_diff():
+        src = pymupdf.open(pdf)
+        w, h = src[0].rect.width, src[0].rect.height
+        moved = pymupdf.open()  # the drawing put back by another program, and one thing added
+        page = moved.new_page(width=w, height=h)
+        page.show_pdf_page(pymupdf.Rect(-6, 4, -6 + w * 1.006, 4 + h * 1.006), src, 0)
+        page.draw_circle(pymupdf.Point(w / 2, h / 2), 30, color=(0, 0, 0), fill=(0, 0, 0))
+        new = os.path.join(work, "returned.pdf")
+        moved.save(new)
+        c = EngineClient()
+        try:
+            run_task(c, "open", (new, ""))
+            r = run_task(c, "visual_diff", (pdf, "", 0, 0, {}))
+        finally:
+            c.shutdown()
+        found = [g["new"] for g in r["regions"] if g["new"]]
+        hit = any(x0 <= w / 2 <= x1 and y0 <= h / 2 <= y1 for x0, y0, x1, y1 in found)
+        scale = r["matrix"][0][0]
+        return (r["aligned"] == "auto" and r["ok"] and hit and abs(scale - 1.006) < .003
+                and len(r["regions"]) <= 3), \
+            f"aligned={r['aligned']} scale={scale:.4f} regions={len(r['regions'])} hit={hit}"
+    check("visual comparison (OpenCV in the engine)", visual_diff)
+
     # -- OCR (Georgian) ------------------------------------------------------------------------
     def ocr():
         src = pymupdf.open(pdf)

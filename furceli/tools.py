@@ -21,7 +21,12 @@ from .forms import (ChoicesDialog, CompareDialog, CompressDialog, FieldDialog, H
 TYPE_NAMES = {"Highlight": "მარკერი", "Underline": "ხაზგასმა", "StrikeOut": "გადახაზვა",
               "Squiggly": "ტალღოვანი ხაზი", "Text": "შენიშვნა", "FreeText": "ტექსტი",
               "Ink": "ნახატი", "Square": "ოთხკუთხედი", "Circle": "ელიფსი", "Line": "ხაზი",
-              "Stamp": "შტამპი"}
+              "Stamp": "შტამპი", "Polygon": "მრავალკუთხედი"}
+
+
+def kind_name(a):
+    """What a comment is called; a polygon marked as a cloud is a revision cloud."""
+    return "ღრუბელი" if a.get("cloud") else TYPE_NAMES.get(a["type"], a["type"])
 
 
 def rgb(color: QColor):
@@ -56,7 +61,7 @@ class CommentsPanel(QWidget):
         self.rev = self.doc.view.rev
         self.list.clear()
         for pno, a in items:
-            head = f"გვ. {pno + 1} · {TYPE_NAMES.get(a['type'], a['type'])}"
+            head = f"გვ. {pno + 1} · {kind_name(a)}"
             if a["author"]:
                 head += f" · {a['author']}"
             it = QListWidgetItem(head + ("\n" + a["text"] if a["text"] else ""))
@@ -115,7 +120,8 @@ class ToolsMixin:
             self.pending_image = None
         if name != "select":
             self.organize(False)
-        self.view.set_tool(name)
+        for v in self.views:  # the pen is one for every pane
+            v.set_tool(name)
         self.changed.emit()
 
     def load_comments(self):
@@ -138,7 +144,8 @@ class ToolsMixin:
                              can_modify=bool(p.get("modify")), can_assemble=bool(p.get("modify")),
                              can_annotate=bool(p.get("annotate") or p.get("modify")),
                              can_fill=bool(p.get("annotate") or p.get("modify")))
-        self.view.can_copy = self.info["can_copy"]
+        for v in self.views:
+            v.can_copy = self.info["can_copy"]
         if last is None:
             self._password, self.info["protected"] = self._base_password, self._base_protected
         elif last["mode"] == "none":
@@ -165,7 +172,7 @@ class ToolsMixin:
         width = self.view.tool_width
         if tool in ("highlight", "underline", "strikeout"):
             self.mark_text(tool, data["quads"])
-        elif tool in ("rect", "ellipse", "line", "arrow", "ink"):
+        elif tool in ("rect", "ellipse", "line", "arrow", "ink", "cloud"):
             self.edit(("annot", pno, tool, dict(data, color=color, width=width), self._meta()))
         elif tool == "note":
             text, ok = QInputDialog.getMultiLineText(self, "შენიშვნა", "ტექსტი:")
@@ -184,7 +191,7 @@ class ToolsMixin:
             self._add_image(pno, data["rect"])
         elif tool == "redact":
             self.view.marks.setdefault(pno, []).append(data["rect"])
-            self.view.viewport().update()
+            self.update_views()
             self.changed.emit()
         elif tool == "field":
             self._add_field(pno, data["rect"])
@@ -294,7 +301,7 @@ class ToolsMixin:
     # -- comments ----------------------------------------------------------
     def edit_comment(self, pno, a):
         text, ok = QInputDialog.getMultiLineText(
-            self, TYPE_NAMES.get(a["type"], a["type"]), "ტექსტი:", a["text"])
+            self, kind_name(a), "ტექსტი:", a["text"])
         if ok and text != a["text"]:
             self.edit(("annot_text", pno, a["index"], a["type"], text, self._meta()))
 
@@ -311,7 +318,7 @@ class ToolsMixin:
         for a in reversed(self._quiet("annots", pno) or []):
             x0, y0, x1, y1 = a["rect"]
             if x0 - 2 <= q.x() <= x1 + 2 and y0 - 2 <= q.y() <= y1 + 2:
-                name = TYPE_NAMES.get(a["type"], a["type"])
+                name = kind_name(a)
                 menu.addAction(f"{name}: ტექსტის შეცვლა…", lambda a=a: self.edit_comment(pno, a))
                 menu.addAction(f"{name}: წაშლა", lambda a=a: self.edit(
                     ("annot_del", pno, a["index"], a["type"])))
@@ -475,7 +482,7 @@ class ToolsMixin:
         for pno, hits in self.view.hits.items():
             for rect, _ in hits:
                 self._mark(pno, (rect[0] - .5, rect[1], rect[2] + .5, rect[3]))
-        self.view.viewport().update()
+        self.update_views()
         self.changed.emit()
 
     def _mark(self, pno, rect):
@@ -487,12 +494,12 @@ class ToolsMixin:
         self.view.marks[pno].remove(rect)
         if not self.view.marks[pno]:
             del self.view.marks[pno]
-        self.view.viewport().update()
+        self.update_views()
         self.changed.emit()
 
     def clear_marks(self):
         self.view.marks = {}
-        self.view.viewport().update()
+        self.update_views()
         self.changed.emit()
 
     def apply_redactions(self):
@@ -684,7 +691,7 @@ class ToolsMixin:
         for c in result["changes"]:
             for p, rect in c["new_at"]:
                 self.view.diff.setdefault(p, []).append(rect)
-        self.view.viewport().update()
+        self.update_views()
         dlg = CompareDialog(os.path.basename(path), os.path.basename(self.path), result, self)
         dlg.chosen.connect(self._show_change)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -708,7 +715,7 @@ class ToolsMixin:
             return
         self._compared = None
         self.view.diff = {}
-        self.view.viewport().update()
+        self.update_views()
 
     # -- certificates ------------------------------------------------------
     def sign(self, pno=None, rect=None, field=""):

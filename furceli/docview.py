@@ -21,6 +21,7 @@ from .dialogs import (PDF_FILTER, CropDialog, InsertDialog, SplitDialog, error_t
 from .engine import IN_MEMORY_LIMIT
 from .banner import Banner
 from .thumbs import RENDER_H, RENDER_W, ThumbList, Thumbs
+from .linked import Linker
 from .tools import CommentsPanel, ToolsMixin
 from .view import PageView, to_image
 
@@ -35,6 +36,9 @@ class DocView(ToolsMixin, QWidget):
     changed = Signal()       # edited, saved, or mode switched: refresh the window
     pageMenu = Signal(QPoint)
     openRequested = Signal(str)
+    pageChanged = Signal(int)   # of the pane being worked in
+    zoomChanged = Signal(float)
+    hovered = Signal(str)
 
     def __init__(self, path, parent=None):
         super().__init__(parent)
@@ -70,17 +74,18 @@ class DocView(ToolsMixin, QWidget):
         self.client = EngineClient(self)
         self.client.done.connect(self._done)
         self.client.failed.connect(self._failed)
-        self.view = PageView(self.client, self.thumbs)
-        self.view.pageChanged.connect(self._page_changed)
-        self.view.uriActivated.connect(self._open_uri)
-        self.view.cropDrawn.connect(self._crop_drawn)
-        self.view.toolDone.connect(self.tool_done)
-        self.view.clicked.connect(self.field_clicked)
-        self.view.contextAt.connect(self.view_menu)
+        self._views: list = []
+        self._active = None
+        self.linked = True            # two panes move together (ჩართალა)
+        self._link = None
+        self._pane(PageView(self.client, self.thumbs))
         self._build_sidebar()
         self._build_organizer()
+        self.panes = QSplitter()      # one pane, or two of the same document
+        self.panes.setChildrenCollapsible(False)
+        self.panes.addWidget(self.view)
         self.center = QStackedWidget()
-        self.center.addWidget(self.view)
+        self.center.addWidget(self.panes)
         self.center.addWidget(self.organizer)
         self.banner = Banner()
         right = QWidget()
@@ -103,6 +108,96 @@ class DocView(ToolsMixin, QWidget):
         self.splitter.hide()
         self._open()
 
+    # -- panes (ჩართალა) ----------------------------------------------------
+    @property
+    def view(self) -> PageView:
+        """The pane being worked in: the last one clicked, drawn in or focused."""
+        return self._active
+
+    @property
+    def views(self) -> list:
+        return list(self._views)
+
+    def _pane(self, v):
+        self._views.append(v)
+        self._active = self._active or v
+
+        def mine(fn):  # the pane that sent it is the one worked in, focus or not
+            return lambda *a: (self._activate(v), fn(*a))
+        v.activated.connect(lambda: self._activate(v))
+        v.toolDone.connect(mine(lambda *a: self.tool_done(*a)))
+        v.clicked.connect(mine(lambda *a: self.field_clicked(*a)))
+        v.contextAt.connect(mine(lambda *a: self.view_menu(*a)))
+        v.cropDrawn.connect(mine(lambda *a: self._crop_drawn(*a)))
+        v.uriActivated.connect(self._open_uri)
+        v.pageChanged.connect(lambda p: v is self._active and (
+            self._page_changed(p), self.pageChanged.emit(p)))
+        v.zoomChanged.connect(lambda z: v is self._active and self.zoomChanged.emit(z))
+        v.hovered.connect(lambda t: v is self._active and self.hovered.emit(t))
+        return v
+
+    def _activate(self, v):
+        if v is not self._active and v in self._views:
+            self._active = v
+            self._page_changed(v.page)
+            self.changed.emit()
+
+    def update_views(self):
+        for v in self._views:
+            v.viewport().update()
+
+    @property
+    def split_now(self):
+        return len(self._views) > 1
+
+    def split_panes(self, orientation):
+        """The same document in a second pane, beside (Horizontal) or under (Vertical)."""
+        if not self.loaded:
+            return
+        self.organize(False)
+        self.panes.setOrientation(orientation)
+        if self.split_now:
+            self.changed.emit()
+            return
+        first = self._views[0]
+        v = self._pane(PageView(self.client, self.thumbs, shared=first.shared))
+        v.rev, v.frozen = first.rev, first.frozen
+        v.zoom, v.fit, v.rotation, v.two_up = first.zoom, first.fit, first.rotation, first.two_up
+        v.set_tool(first.tool)
+        self.panes.addWidget(v)
+        half = max(self.panes.width(), 2) // 2
+        self.panes.setSizes([half, half])
+        v.set_document(self.sizes, first.can_copy)
+        v.go_to(first.page)
+        self.linked = False             # split: each pane on its own until asked otherwise
+        self._link = Linker(first, v, parent=self)
+        self._link.on = self.linked
+        # once laid out, the new pane comes to the first: unless turned apart meanwhile
+        QTimer.singleShot(0, lambda: self._link and self.linked and self._link.set_on(True, first))
+        self.changed.emit()
+
+    def unsplit(self):
+        if not self.split_now:
+            return
+        keep = self._active             # the pane worked in stays, with its place
+        v = next(x for x in self._views if x is not keep)
+        self._views.remove(v)           # keep is the first one now: it moves what is shared
+        keep.shared.views.remove(v)
+        if self._link is not None:
+            self._link.close()
+            self._link.deleteLater()
+            self._link = None
+        keep.setFocus()
+        v.hide()
+        v.setParent(None)
+        v.deleteLater()
+        self.changed.emit()
+
+    def set_linked(self, on):
+        self.linked = on
+        if self._link is not None:
+            self._link.set_on(on, self.view)
+
     # -- opening -----------------------------------------------------------
     def _open(self):
         self.client.submit(("open",), P_OPEN, "open", self.path, self._password)
@@ -115,7 +210,8 @@ class DocView(ToolsMixin, QWidget):
         self._fill_toc(info["toc"])
         self.loading.hide()
         self.splitter.show()
-        self.view.set_document(self.sizes, info["can_copy"])
+        for v in self._views:
+            v.set_document(self.sizes, info["can_copy"])
         if self.start_page:
             QTimer.singleShot(0, lambda: self.view.go_to(self.start_page))
         self.view.setFocus()
@@ -154,7 +250,8 @@ class DocView(ToolsMixin, QWidget):
             if key[1] == self._gen:
                 self._add_hits(key[2], value)
         elif kind in ("tile", "chars", "links", "widgets"):
-            self.view.on_done(key, value)
+            for v in self._views:  # one answer for every pane that wants it
+                v.on_done(key, value)
         elif kind == "comments":
             if key[1] == self.view.rev:
                 self.comments.show_list(value)
@@ -174,7 +271,8 @@ class DocView(ToolsMixin, QWidget):
             if key[1] == self._gen:
                 self._add_hits(key[2], [])
         elif kind in ("tile", "chars", "links", "widgets"):
-            self.view.on_failed(key)
+            for v in self._views:
+                v.on_failed(key)
         elif kind in ("edit", "undo", "redo", "restore"):
             self._edit_failed(kind, code)
         if kind in CONTENT and code in ("crash", "engine_dead"):
@@ -365,7 +463,7 @@ class DocView(ToolsMixin, QWidget):
         self.client.cancel(lambda k: k[0] == "search")
         self._found, self.view.hits, self.view.current_hit = [], {}, None
         self.results.clear()
-        self.view.viewport().update()
+        self.update_views()
         text = " ".join(self.query.text().split())
         if len(text) < 2 or not self.loaded:
             self.found_label.setText("" if not text else "შეიყვანეთ მინიმუმ 2 სიმბოლო")
@@ -395,7 +493,7 @@ class DocView(ToolsMixin, QWidget):
                 self.results.takeItem(MAX_LISTED)
             if self.view.current_hit is None and self._jump:
                 self._select_hit((pno, 0))
-            self.view.viewport().update()
+            self.update_views()
         n = len(self._found)
         if self._left > 0:
             self.found_label.setText(f"იძებნება… ნაპოვნია {n}")
@@ -420,6 +518,7 @@ class DocView(ToolsMixin, QWidget):
         row = bisect.bisect_left(self._found, hit)
         self.results.setCurrentRow(row if row < self.results.count() else -1)
         self.view.show_rect(hit[0], self.view.hits[hit[0]][hit[1]][0])
+        self.update_views()  # the current hit is marked in every pane
 
     # -- editing -----------------------------------------------------------
     @property
@@ -537,7 +636,8 @@ class DocView(ToolsMixin, QWidget):
         self._busy = True
         # The engine's side notes the success itself, so a crash right after it loses nothing.
         self.client.recover_with(self._base, self._base_password, self.ops)
-        self.view.frozen = True
+        for v in self._views:
+            v.frozen = True
         self.client.cancel(lambda k: k[0] in CONTENT)
         self._seq += 1
         self.client.submit((kind, self._seq), P_OPEN, op, *args)
@@ -596,8 +696,9 @@ class DocView(ToolsMixin, QWidget):
         self.thumbs.remap(mapping)
         self._bad_thumbs.clear()
         self._busy = False
-        self.view.frozen = False
-        self.view.cancel_crop()  # the pages it was meant for may be others now
+        for v in self._views:
+            v.frozen = False
+            v.cancel_crop()  # the pages it was meant for may be others now
         self._moving = None
         pos = self.grid.verticalScrollBar().value()
         last = self.ops[-1][0] if self.ops and kind in ("edit", "redo") else ""
@@ -623,9 +724,12 @@ class DocView(ToolsMixin, QWidget):
             self.status.emit(after)
         if last == "redact":
             self.view.marks = {}
-        self.view.reload(self.sizes, mapping, still=bool(last) and last not in self.MOVES)
-        if self.view.lost_marks:
-            self.notify("warning", f"დასაფარად მონიშნული {self.view.lost_marks} ადგილი მოიხსნა: "
+        first = self._views[0]
+        for v in self._views:  # what they share moves once, with the first
+            v.reload(self.sizes, mapping, still=bool(last) and last not in self.MOVES,
+                     primary=v is first)
+        if first.lost_marks:
+            self.notify("warning", f"დასაფარად მონიშნული {first.lost_marks} ადგილი მოიხსნა: "
                                    "გვერდი შეიცვალა. მონიშნეთ თავიდან.")
         if mapping is not None and len(mapping) == self.list.model_.rows:
             for lst in (self.list, self.grid):  # same pages: refresh without losing scroll

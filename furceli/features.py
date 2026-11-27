@@ -21,7 +21,7 @@ import pymupdf
 from pymupdf import Matrix, Point, Quad, Rect
 
 from . import layers, legacy
-from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char
+from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char, view_matrix
 
 PUNCT = ".,;:!?\"'()[]{}«»„“”‘’—–-…/\\"
 
@@ -198,7 +198,8 @@ class Features(EditEngine):
             info = a.info
             out.append({"index": i, "type": a.type[1], "rect": tuple(a.rect * page.rotation_matrix),
                         "text": info.get("content") or "", "author": info.get("title") or "",
-                        "date": info.get("modDate") or ""})
+                        "date": info.get("modDate") or "",
+                        "cloud": self.doc.xref_get_key(a.xref, "IT")[1] == "/PolygonCloud"})
         return out
 
     def all_annots(self):
@@ -247,11 +248,14 @@ class Features(EditEngine):
             a = page.add_line_annot(pt(data["from"]), pt(data["to"]))
             if kind == "arrow":
                 a.set_line_ends(pymupdf.PDF_ANNOT_LE_NONE, pymupdf.PDF_ANNOT_LE_OPEN_ARROW)
+        elif kind == "cloud":  # a revision cloud, as Acrobat and Bluebeam write one
+            x0, y0, x1, y1 = data["rect"]
+            a = page.add_polygon_annot([pt(p) for p in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
         else:
             raise EngineError("bad_op")
-        if kind in ("ink", "rect", "ellipse", "line", "arrow"):
+        if kind in ("ink", "rect", "ellipse", "line", "arrow", "cloud"):
             a.set_colors(stroke=color)
-            a.set_border(width=width)
+            a.set_border(width=width, clouds=1 if kind == "cloud" else -1)
         a.set_info(title=meta.get("author", ""), content=text,
                    creationDate=meta.get("date", ""), modDate=meta.get("date", ""))
         if kind == "text":
@@ -261,6 +265,8 @@ class Features(EditEngine):
         else:
             a.update(opacity=data.get("opacity", 1))
         self.doc.xref_set_key(a.xref, "NM", pymupdf.get_pdf_str(meta.get("id", "")))
+        if kind == "cloud":  # what tells other programs that this polygon is a cloud
+            self.doc.xref_set_key(a.xref, "IT", "/PolygonCloud")
         return self._same(pno)
 
     def _op_annot_del(self, pno, index, kind):
@@ -1221,10 +1227,10 @@ class Features(EditEngine):
         return self._same(*pages)
 
     # -- compare -----------------------------------------------------------
-    def compare(self, path, password=""):
-        """Differences between this document (new) and another file (old)."""
-        other = Features()
-        other.open(path, password)
+    def compare(self, path, password="", pictures=True):
+        """Differences between this document (new) and another file (old).
+        pictures=False: words only (ჩართალა compares the pictures itself, visual_diff)."""
+        other = self._other_engine(path, password)  # open already when the pictures were compared
 
         def stream(eng):
             out = []
@@ -1253,11 +1259,8 @@ class Features(EditEngine):
         for tag, i1, i2, j1, j2 in sm.get_opcodes():
             if tag != "equal":
                 add(lo + i1, lo + i2, lo + j1, lo + j2, tag)
-        touched = {p for c in changes for p, _ in c["new_at"]}
-        pictures = []
-        for p in range(min(other.doc.page_count, self.doc.page_count)):
-            if p in touched:
-                continue
+        looked, pictures = pictures, []  # pages whose words changed are looked at too
+        for p in range(min(other.doc.page_count, self.doc.page_count) if looked else 0):
             x, y = (e.doc.load_page(p).get_pixmap(dpi=60, colorspace=pymupdf.csGRAY)
                     for e in (other, self))
             if (x.width, x.height) != (y.width, y.height):
@@ -1269,8 +1272,250 @@ class Features(EditEngine):
                 if diff > 12:
                     pictures.append(p)
         counts = (other.doc.page_count, self.doc.page_count)
-        other.close()
         return {"changes": changes, "pictures": pictures, "pages": counts}
+
+    # -- visual comparison of drawings (ჩართალა) ------------------------------
+    # dpi, ink: darker than this is a line, tolerance: px a line may move and stay the same,
+    # join: px between pieces of one change, min_px: smaller changes are noise
+    # auto: align when the pages do not lie on each other; good: share of lines that must meet
+    # for the pages to count as lying on each other; fit: least share an alignment must reach
+    # faint: lighter than ink, yet still a line: what a line is allowed to fade to on the other
+    # side (a hairline put back by another program falls between pixels and comes out lighter;
+    # on two real drawing sets: no false place from 140 levels up, many at 100); contrast:
+    # darker than that over what the other side has is a change all the same (a letter over
+    # a grey hatch: 221 levels darker, the median)
+    # ecc: the pictures' own correlation at which an alignment is right whatever the edges say
+    DIFF = {"dpi": 100, "ink": 200, "faint": 245, "contrast": 140, "tolerance": 2, "join": 8,
+            "min_px": 12, "auto": True, "good": 0.97, "fit": 0.6, "ecc": 0.85}
+    DIFF_MAX_PIXELS = 30_000_000
+    DIFF_MAX_REGIONS = 200     # on one page; the biggest are kept, "more" says how many went
+
+    def close(self):
+        held, self._other = getattr(self, "_other", None), None
+        if held:
+            held[1].close()
+        super().close()
+
+    def _other_engine(self, path, password):
+        """The other drawing, opened once for all of its pages."""
+        held = getattr(self, "_other", None)
+        if held and held[0] == (path, password):
+            return held[1]
+        if held:
+            held[1].close()
+        self._other = None
+        other = Features()
+        other.open(path, password)
+        self._other = ((path, password), other)
+        return other
+
+    @staticmethod
+    def _gray(eng, pno, k):
+        import numpy as np
+        dl, w, h = eng._list(pno)
+        pix = dl.get_pixmap(matrix=view_matrix(w, h, k, 0), colorspace=pymupdf.csGRAY, alpha=0)
+        rows = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)
+        return np.ascontiguousarray(rows[:, :pix.width])
+
+    @staticmethod
+    def _meet(a, b, m, o, near):
+        """How well old picture a, put on new picture b by m (pixels), lies on it: the larger
+        share of either side's edges that the other side has close by. Added or removed
+        drawing lowers only one of the two shares. Edges, not ink: a filled area or a picture
+        has ink everywhere and would seem to lie on itself however far it moved."""
+        import cv2
+        a = cv2.warpAffine(a, m, (b.shape[1], b.shape[0]), flags=cv2.INTER_LINEAR,
+                           borderValue=255)
+        box = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+
+        def edges(img, level):
+            ink = (img < level).astype("uint8")
+            return ink & (1 - cv2.erode(ink, box))
+        ea, eb = edges(a, o["ink"]), edges(b, o["ink"])
+        na, nb = int(ea.sum()), int(eb.sum())
+        if not na or not nb:
+            return 1.0
+        return max(int((ea & cv2.dilate(edges(b, o["faint"]), near)).sum()) / na,
+                   int((eb & cv2.dilate(edges(a, o["faint"]), near)).sum()) / nb)
+
+    @staticmethod
+    def _by_points(points):
+        """Two points on each drawing, [[old, new], [old, new]] -> old -> new: scale, turn
+        and move, nothing else."""
+        (o1, n1), (o2, n2) = [(complex(*o), complex(*n)) for o, n in points]
+        if abs(o2 - o1) < 1 or abs(n2 - n1) < 1:
+            raise EngineError("bad_points")
+        s = (n2 - n1) / (o2 - o1)
+        t = n1 - s * o1
+        return [[s.real, -s.imag, t.real], [s.imag, s.real, t.imag]]
+
+    def _align(self, a, b, o, near):
+        """Old -> new in pixels, found from the drawings themselves: points both have in common
+        (ORB), the outliers thrown out (RANSAC), then refined on smaller pictures (ECC).
+        Added drawing has no partner on the old side, so it cannot pull the result.
+        Returns (matrix or None, how well the edges meet, ECC's correlation). A page that is
+        a picture has edges that change when drawn again: there the correlation tells."""
+        import cv2
+        import numpy as np
+        best, fit, cc = None, 0.0, 0.0
+
+        def small(img, f):
+            return cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA) if f < 1 else img
+
+        def factor(side):  # one for both pictures: the scale between them must not change
+            return min(1.0, side / max(a.shape + b.shape))
+
+        def full(m, f):
+            m = np.array(m, np.float64)
+            m[:, 2] /= f
+            return m
+
+        def consider(m):
+            nonlocal best, fit
+            got = self._meet(a, b, m, o, near)
+            if got > fit:
+                best, fit = m, got
+        f = factor(1600)
+        sa, sb = small(a, f), small(b, f)
+        orb = cv2.ORB_create(nfeatures=5000)
+        ka, da = orb.detectAndCompute(sa, None)
+        kb, db = orb.detectAndCompute(sb, None)
+        if da is not None and db is not None and len(ka) >= 8 and len(kb) >= 8:
+            pairs = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(da, db)
+            if len(pairs) >= 8:
+                src = np.float32([ka[x.queryIdx].pt for x in pairs])
+                dst = np.float32([kb[x.trainIdx].pt for x in pairs])
+                m, keep = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC,
+                                                      ransacReprojThreshold=3.0, maxIters=5000,
+                                                      confidence=0.995)
+                if m is not None and keep is not None and int(keep.sum()) >= 8:
+                    consider(full(m, f))
+        if best is not None:
+            fe = factor(900)
+            ea, eb = small(a, fe), small(b, fe)
+            back = np.array(best, np.float64)
+            back[:, 2] *= fe
+            warp = cv2.invertAffineTransform(back).astype(np.float32)  # ECC: new -> old
+            try:
+                cc, warp = cv2.findTransformECC(
+                    eb.astype(np.float32), ea.astype(np.float32), warp, cv2.MOTION_AFFINE,
+                    (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 1e-6), None, 5)
+                refined = full(cv2.invertAffineTransform(warp), fe)
+                if cc >= o["ecc"]:  # the pictures themselves agree: that settles it
+                    best, fit = refined, max(fit, self._meet(a, b, refined, o, near))
+                else:
+                    consider(refined)
+            except cv2.error:
+                cc = 0.0  # did not converge: the points alone stay
+        return best, fit, float(cc)
+
+    def visual_diff(self, path, password, p_old, p_new, opts=None):
+        """Where page p_old of the file at path (old) and page p_new of this document (new)
+        differ as pictures. Regions: {"old": rect or None, "new": rect or None}, in displayed
+        page points of each side; "old" is something removed or changed, "new" something added
+        or changed.
+
+        How the old page is put on the new one ("matrix" of the result, old -> new in points):
+        opts["matrix"] as given; else two pairs of points in opts["points"] (by hand); else
+        first as it is, and only when the pages do not lie on each other (and opts["auto"])
+        aligned from the drawings. "ok" is False when that failed: aligning by hand helps."""
+        import cv2
+        import numpy as np
+        o = dict(self.DIFF, **(opts or {}))
+        other = self._other_engine(path, password)
+        _, wo, ho = other._list(p_old)
+        _, wn, hn = self._list(p_new)
+        k = o["dpi"] / 72
+        most = max(wo * ho, wn * hn) * k * k
+        if most > self.DIFF_MAX_PIXELS:  # a big sheet: fewer pixels, not more memory
+            k *= math.sqrt(self.DIFF_MAX_PIXELS / most)
+        a, b = self._gray(other, p_old, k), self._gray(self, p_new, k)
+        eye = [[1, 0, 0], [0, 1, 0]]
+        r = max(int(o["tolerance"]), 2)
+        loose = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        aligned, ok = "none", True
+        if o.get("matrix"):
+            m, aligned = np.array(o["matrix"], np.float64), "given"
+        elif o.get("points"):
+            m, aligned = np.array(self._by_points(o["points"]), np.float64), "manual"
+        else:
+            m = np.array(eye, np.float64)
+            plain = self._meet(a, b, m, o, loose)
+            if plain < o["good"] and o["auto"]:
+                found, fit, cc = self._align(a, b, o, loose)
+                if found is not None and (cc >= o["ecc"] or fit >= o["fit"] and fit > plain + 0.02):
+                    m = found.copy()
+                    m[:, 2] /= k  # pixels -> points
+                    aligned = "auto"
+                elif plain < o["fit"]:
+                    ok = False  # as it is; two points by hand will do it
+                # else: as it is lies on it well enough, and nothing does better
+        mp = m.copy()
+        mp[:, 2] *= k
+        a = cv2.warpAffine(a, mp, (b.shape[1], b.shape[0]), flags=cv2.INTER_LINEAR,
+                           borderValue=255)
+        t = max(int(o["tolerance"]), 0)
+        near = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * t + 1, 2 * t + 1))
+
+        def gone(x, y):
+            """Ink of x that y does not have: y has not even a faint line close by, or what y
+            has close by is far lighter (new lines over an old grey fill). A line that only
+            faded a little is no change."""
+            darkest = cv2.erode(y, near).astype(np.int16)
+            return ((x < o["ink"]) & ((darkest >= o["faint"])
+                                      | (darkest - x > o["contrast"]))).astype(np.uint8)
+        removed, added = gone(a, b), gone(b, a)
+        match = 1 - float(removed.sum()) / max(float((a < o["ink"]).sum()), 1.0)
+        del a, b
+        regions = []
+        change = removed | added
+        if change.any():
+            j = max(int(o["join"]), 1)
+            grown = cv2.dilate(change, cv2.getStructuringElement(cv2.MORPH_RECT,
+                                                                (2 * j + 1, 2 * j + 1)))
+            n, labels = cv2.connectedComponents(grown, connectivity=8)
+            del grown
+            ys, xs = np.nonzero(change)
+            lab = labels[ys, xs]
+            was_old = removed[ys, xs].astype(bool)
+            del labels
+
+            def boxes(side):
+                lb, x, y = lab[side], xs[side], ys[side]
+                count = np.bincount(lb, minlength=n)
+                lo_x, lo_y = np.full(n, 1 << 30), np.full(n, 1 << 30)
+                hi_x, hi_y = np.full(n, -1), np.full(n, -1)
+                np.minimum.at(lo_x, lb, x)
+                np.minimum.at(lo_y, lb, y)
+                np.maximum.at(hi_x, lb, x)
+                np.maximum.at(hi_y, lb, y)
+                return count, lo_x, lo_y, hi_x, hi_y
+            rem, add = boxes(was_old), boxes(~was_old)
+            back = cv2.invertAffineTransform(m)
+            side_min = max(3, o["min_px"] // 4)
+            for i in range(1, n):
+                if rem[0][i] + add[0][i] < o["min_px"]:
+                    continue
+                new = old = None
+                if add[0][i] >= side_min:
+                    new = (add[1][i] / k, add[2][i] / k, (add[3][i] + 1) / k, (add[4][i] + 1) / k)
+                if rem[0][i] >= side_min:
+                    x0, y0, x1, y1 = (rem[1][i] / k, rem[2][i] / k,
+                                      (rem[3][i] + 1) / k, (rem[4][i] + 1) / k)
+                    pts = np.array([[x0, y0, 1], [x1, y0, 1], [x0, y1, 1], [x1, y1, 1]]) @ back.T
+                    old = (pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max())
+                if new or old:
+                    regions.append({"old": old and tuple(round(float(v), 2) for v in old),
+                                    "new": new and tuple(round(float(v), 2) for v in new)})
+        more = max(len(regions) - self.DIFF_MAX_REGIONS, 0)
+        if more:  # pages that do not match at all: thousands of places help nobody
+            def area(g):
+                r = g["new"] or g["old"]
+                return (r[2] - r[0]) * (r[3] - r[1])
+            regions = sorted(regions, key=area, reverse=True)[:self.DIFF_MAX_REGIONS]
+        regions.sort(key=lambda g: ((g["new"] or g["old"])[1], (g["new"] or g["old"])[0]))
+        return {"regions": regions, "more": more, "dpi": round(k * 72, 2),
+                "matrix": m.tolist(), "ok": ok, "aligned": aligned, "match": round(match, 4)}
 
     def pdf_box(self, pno, rect):
         """Displayed rectangle -> PDF user space, for signature fields."""
