@@ -655,6 +655,13 @@ class ToolsMixin:
             if d < 6 and (best is None or d < best[0]):
                 best = (d, ln)
         if best is None:
+            for a in self._quiet("annots", pno) or []:  # a measurement or a comment: its own tools
+                x0, y0, x1, y1 = a["rect"]
+                if x0 <= x <= x1 and y0 <= y <= y1 and (a.get("measure") or a["type"] in ("FreeText", "Stamp")):
+                    self.notify("info", "ეს გაზომვის წარწერაა: შენიშვნის შესაცვლელად — მარჯვენა ღილაკი → "
+                                "„შენიშვნა…“." if a.get("measure") else
+                                "ეს კომენტარია: შესაცვლელად — მარჯვენა ღილაკი → „ტექსტის შეცვლა…“.")
+                    return
             self.notify("info", "აქ ტექსტი არ არის. დასკანერებულ გვერდს ჯერ ტექსტის ამოცნობა სჭირდება (OCR).",
                         "ამოცნობა…", self.ocr)
             return

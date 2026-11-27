@@ -129,7 +129,7 @@ def crossings(segments, size):
 
 
 class SnapIndex:
-    """What a point may snap to near the mouse: ends first, then crossings, then a line."""
+    """What a point may snap to near the mouse: the nearest end or crossing, else a line."""
 
     def __init__(self, points, segments, size=24.0):
         self.size = size
@@ -154,16 +154,17 @@ class SnapIndex:
 
     def find(self, x, y, tol):
         """(x, y, kind) or None; kind: end, cross or line."""
-        best = {}
+        # the nearest end or crossing (as CAD programs do: a dimension's tick crosses its line
+        # a point away from the tick's own ends); a line only when no point is near
+        best = None
         reach = tol * self.POINT_PULL
         for i in self._near(self._pgrid, x, y, reach):
             px, py, kind = self.points[i]
             d = math.hypot(px - x, py - y)
-            if d <= reach and (kind not in best or d < best[kind][0]):
-                best[kind] = (d, (px, py, kind))
-        for kind in ("end", "cross"):
-            if kind in best:
-                return best[kind][1]
+            if d <= reach and (best is None or d < best[0]):
+                best = (d, (px, py, kind))
+        if best is not None:
+            return best[1]
         near = None
         for i in self._near(self._sgrid, x, y, tol):
             x0, y0, x1, y1 = self.segments[i]

@@ -344,3 +344,78 @@ def test_a_corner_pulls_harder_than_the_line_beside_it():
     assert idx.find(397, 103, 4) == (400, 100, "end")  # 4.2 from the corner, 3 from a line
     assert idx.find(300, 103, 4)[2] == "line"
     assert idx.find(300, 110, 4) is None
+
+
+def test_the_nearest_point_wins_whatever_it_is():
+    # a dimension's slanted tick: its ends lie off the line, where it crosses the line is wanted
+    from furceli import measure
+    idx = measure.SnapIndex([(98.6, 101.4, "end"), (101.4, 98.6, "end"), (100, 100, "cross")],
+                            [(0, 100, 200, 100), (98.6, 101.4, 101.4, 98.6)])
+    assert idx.find(100.3, 100.2, 4) == (100, 100, "cross")
+    assert idx.find(98.8, 101.3, 4) == (98.6, 101.4, "end")
+
+
+def test_moving_the_mouse_while_the_lines_load_does_not_start_another_load(win, tmp_path, monkeypatch):  # noqa: F811
+    # Reading a page's lines waits for the engine with events still flowing: a mouse move
+    # then asked for them again, and again, until the program fell over (stack overflow).
+    from PySide6.QtCore import QPointF
+    from test_ui import open_doc
+    doc = open_doc(win, plan(tmp_path))
+    win.tool_acts["m_distance"].trigger()
+    v = doc.view
+    calls = []
+    real = type(doc)._load_snaps
+
+    def load(self, view, pno):
+        calls.append(pno)
+        if len(calls) < 50:  # what the waiting loop does: the next mouse move arrives meanwhile
+            view._measure_point(pno, QPointF(vp(view, 0, 150, 150)) * view.dpr)
+        real(self, view, pno)
+    monkeypatch.setattr(type(doc), "_load_snaps", load)
+    v.snaps.clear()
+    v._measure_point(0, QPointF(vp(v, 0, 102, 98)) * v.dpr)
+    assert calls == [0]
+    assert v._measure_point(0, QPointF(vp(v, 0, 102, 98)) * v.dpr).x() == 100  # loaded, snapping
+
+
+def test_choosing_while_the_objects_load_does_not_start_another_load(win, tmp_path, monkeypatch):  # noqa: F811
+    from PySide6.QtCore import QPointF
+    from test_ui import open_doc
+    doc = open_doc(win, plan(tmp_path))
+    win.tool_acts["object"].trigger()
+    v = doc.view
+    calls = []
+    real = type(doc)._load_objects
+
+    def load(self, view, pno):
+        calls.append(pno)
+        if len(calls) < 50:
+            view._object_press(QPointF(vp(view, 0, 150, 150)) * view.dpr)
+        real(self, view, pno)
+    monkeypatch.setattr(type(doc), "_load_objects", load)
+    v.objects.clear()
+    v._object_press(QPointF(vp(v, 0, 150, 150)) * v.dpr)
+    assert calls == [0]
+
+
+def test_labels_of_measurements_are_not_lines_to_edit(tmp_path):
+    # Clicking a measurement's label with "replace text" was refused with a puzzling warning:
+    # the label belongs to the annotation, not to the page's text.
+    e = engine(plan(tmp_path))
+    at_1_100(e)
+    e.apply(("measure", 0, "distance", [(100, 450), (100 + 100 * MM, 450)], "კედელი"))
+    texts = [ln["text"] for ln in e.lines(0)]
+    assert not any("კედელი" in t for t in texts)
+    assert not any("კედელი" in " ".join(o.get("texts", [])) for o in e.objects(0))
+
+
+def test_a_click_on_a_measurement_with_the_text_tool_explains(win, tmp_path):  # noqa: F811
+    from test_ui import open_doc
+    from test_ui_pages import idle
+    doc = open_doc(win, plan(tmp_path))
+    doc.edit(("measure", 0, "distance", [(100, 450), (100 + 100 * MM, 450)], "კედელი"))
+    idle(doc)
+    a = [c for c in doc._quiet("annots", 0) if c["measure"]][0]
+    x0, y0, x1, y1 = a["rect"]
+    doc.edit_line(0, ((x0 + x1) / 2, (y0 + y1) / 2 - 6))
+    assert "გაზომვ" in doc.banner.message() and "შენიშვნა" in doc.banner.message()

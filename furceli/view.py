@@ -765,6 +765,9 @@ class PageView(QAbstractScrollArea):
         alt = QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier
         if self.snap_on and not alt:
             if pno not in self.snaps:
+                # Marked first: loading waits for the engine with events still flowing, and a
+                # mouse move meanwhile must not ask again (that nested until the stack overflowed).
+                self.snaps[pno] = None
                 self.snapsWanted.emit(pno)
             index = self.snaps.get(pno)
             if index is not None:
@@ -925,6 +928,7 @@ class PageView(QAbstractScrollArea):
                 self._obj_drag = ["size", q, QPointF(ax, ay), r]
                 return
         if pno not in self.objects:
+            self.objects[pno] = []  # marked first, as with snapping: no second load meanwhile
             self.objectsWanted.emit(pno)
         o = self.object_at(pno, q)
         self._obj = (pno, o) if o else None

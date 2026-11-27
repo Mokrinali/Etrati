@@ -130,3 +130,33 @@ def test_the_menu_offers_only_what_fits_a_block_of_text(win, tmp_path, monkeypat
     monkeypatch.setattr(tools, "QMenu", Menu)
     doc.view_menu(0, QPointF(90, 95), None)
     assert "ტექსტის წაშლა" in seen and "სურათის ჩანაცვლება…" not in seen
+
+
+def overlapping(tmp_path):
+    """A unit and a number whose boxes overlap, as some programs (Odoo) write table cells."""
+    d = pymupdf.open()
+    p = d.new_page(width=400, height=200)
+    p.insert_font(fontname="S", fontfile=r"C:\Windows\Fonts\sylfaen.ttf")
+    w = pymupdf.Font(fontfile=r"C:\Windows\Fonts\sylfaen.ttf").text_length("დღე", fontsize=12)
+    # written apart in the page's order, as such programs do: two lines, their boxes overlapping
+    p.insert_text((100 + w - 4, 100), "13", fontname="S", fontsize=12, color=(.4, .4, .4))
+    p.insert_text((100, 170), "სხვა ტექსტი", fontname="S", fontsize=12)
+    p.insert_text((100, 100), "დღე", fontname="S", fontsize=12)
+    path = str(tmp_path / "cells.pdf")
+    d.save(path)
+    return path
+
+
+def test_a_line_whose_box_overlaps_its_neighbour_can_be_changed(tmp_path):
+    e = engine(overlapping(tmp_path))
+    lines = {ln["text"]: ln for ln in e.lines(0)}
+    assert set(lines) == {"დღე", "13", "სხვა ტექსტი"}
+    ln = lines["13"]
+    e.apply(("replace", 0, ln["index"], "13", "15",
+             {k: ln[k] for k in ("size", "color", "bold", "italic", "serif", "mono")}))
+    d = saved(e, tmp_path)
+    words = "".join(d[0].get_text().split())
+    assert "15" in words and "13" not in words and "დღე" in words  # the neighbour written again
+    spans = {s["text"].strip(): s for b in d[0].get_text("dict")["blocks"] for l in b.get("lines", ())
+             for s in l["spans"] if s["text"].strip()}
+    assert spans["15"]["color"] == 0x666666 and abs(spans["დღე"]["size"] - 12) < .1

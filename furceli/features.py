@@ -21,7 +21,7 @@ import zlib
 import pymupdf
 from pymupdf import Matrix, Point, Quad, Rect
 
-from . import layers, legacy, measure
+from . import layers, legacy, measure, strokes
 from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char, view_matrix
 
 PUNCT = ".,;:!?\"'()[]{}«»„“”‘’—–-…/\\"
@@ -95,16 +95,19 @@ class _Type:
         return self.font.text_length(text, fontsize=size)
 
     def put(self, at: Point, text, size, color=(0, 0, 0), angle=0.0, opacity=1.0,
-            overlay=True, mode=0, rotate=None, to=None):
-        """at is in displayed space; angle turns counter-clockwise as displayed."""
+            overlay=True, mode=0, rotate=None, to=None, border=None):
+        """at is in displayed space; angle turns counter-clockwise as displayed. border: the
+        outline's width as a part of the size, for text drawn filled and outlined (mode 2)."""
         page = self.page
         pt = Point(at) * page.derotation_matrix
         morph = (pt, Matrix(angle)) if angle else None
+        extra = {} if to else {"overlay": overlay, "fill_opacity": opacity, "stroke_opacity": opacity}
+        if border:
+            extra.update(fill=color, border_width=border)
         (to or page).insert_text(
             pt, text, fontname=self.name, fontsize=size, color=color,
             rotate=page.rotation if rotate is None else rotate, morph=morph,
-            render_mode=mode, **({} if to else {"overlay": overlay, "fill_opacity": opacity,
-                                                "stroke_opacity": opacity}))
+            render_mode=mode, **extra)
 
 
 def _words(lines):
@@ -604,11 +607,30 @@ class Features(EditEngine):
         return self._same(pno)
 
     # -- content -----------------------------------------------------------
+    def _not_text(self, page):
+        """Places whose words are not the page's text: the look of a measurement, a comment's
+        text box or a stamp, and a date (each has a tool of its own). Unturned page space."""
+        out = [Rect(r) * page.derotation_matrix for _x, _n, r in self._dates_drawn(page)]
+        for a in self._annot_list(page):
+            if a.type[1] in ("FreeText", "Stamp") or self._measure_kind(a.xref):
+                out.append(Rect(a.rect))
+        return [r.normalize() for r in out]
+
+    @staticmethod
+    def _within(bbox, places):
+        r = Rect(bbox)
+        mid = Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+        return any(p.contains(mid) for p in places)
+
     def lines(self, pno):
         """Editable text lines: what a click in text-edit mode can change."""
         page = self.doc.load_page(pno)
         out = []
+        skip = self._not_text(page)
+        marks = self._outlines(page)
         for ln in self._raw_lines(page):
+            if skip and self._within(ln["bbox"], skip):
+                continue
             s = ln["spans"][0]
             text = self._line_text(ln)
             if not text.strip():
@@ -618,7 +640,7 @@ class Features(EditEngine):
                         "rect": tuple(Rect(ln["bbox"]) * page.rotation_matrix),
                         "size": s["size"], "font": s["font"],
                         "color": ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255),
-                        "bold": bool(s["flags"] & 16) or "bold" in s["font"].lower(),
+                        "bold": self._looks_bold(ln, self._weights(ln, marks)),
                         "italic": bool(s["flags"] & 2), "serif": bool(s["flags"] & 4),
                         "mono": bool(s["flags"] & 8)})
         return out
@@ -662,32 +684,135 @@ class Features(EditEngine):
         chars = [c for s in ln["spans"] for c in s["chars"]]
         first = ln["spans"][0]
         own = sum(1 for c in chars if not c["c"].isspace())
+        marks = self._outlines(page)
+        weights = self._weights(ln, marks)
+        made_up = any(weights)  # Word's bold: the regular face filled and outlined
+        if made_up and style["bold"] == self._looks_bold(ln, weights):
+            new_weights = self._carry_weights(list(old), new, weights)  # each letter as it was
+        elif made_up and style["bold"]:
+            new_weights = [max(w for w in weights if w)] * len(new)
+        else:
+            new_weights = [None] * len(new)
         strips = self._line_strips(pno, chars, turn, own)
+        again = []
         if strips is None:
-            raise EngineError("replace_collateral")
+            # Some programs (Odoo, for one) write a cell's words so that their boxes overlap:
+            # taking this line out takes letters of the touching one too. Then both go and the
+            # touching one is written again as it was (its text, size, colour and weight).
+            box = Rect(ln["bbox"]) + (-1, -1, 1, 1)
+            again = [o for o in found if o is not ln and Rect(o["bbox"]).intersects(box)
+                     and self._turn_of(o) == turn and self._line_text(o).strip()]
+            if again and len(again) <= 4:
+                both = chars + [c for o in again for s in o["spans"] for c in s["chars"]]
+                strips = self._line_strips(pno, both, turn,
+                                           sum(1 for c in both if not c["c"].isspace()))
+            if strips is None:
+                raise EngineError("replace_collateral")
+        keep = [(self._line_text(o), Point(o["spans"][0]["chars"][0]["origin"]) * page.rotation_matrix,
+                 self._span_style(o["spans"][0]), o["dir"], self._weights(o, marks)) for o in again]
+        page = None
         page = self._remove_strips(self.doc, pno, strips)
+        for text, at, st, d, ws in keep:
+            kind = _Type(page, text, serif=st["serif"], mono=st["mono"],
+                         bold=st["bold"] and not any(ws), italic=st["italic"])
+            self._put_runs(page, kind, at, d, text, ws, st["size"], st["size"], st["color"], turn)
         if new.strip():
             kind = _Type(page, new, serif=style["serif"], mono=style["mono"],
-                         bold=style["bold"], italic=style["italic"])
+                         bold=style["bold"] and not made_up, italic=style["italic"])
             size = style["size"]
             at = Point(chars[0]["origin"])
             room = {0: page.cropbox.width - at.x, 180: at.x,
                     90: at.y, 270: page.cropbox.height - at.y}[turn] - 6
             while kind.width(new, size) > room and size > first["size"] * .6:
                 size -= .25
-            kind.put(at * page.rotation_matrix, new, size, style["color"], rotate=turn)
+            self._put_runs(page, kind, at * page.rotation_matrix, ln["dir"], new, new_weights,
+                           size, first["size"], style["color"], turn)
         return self._same(pno)
+
+    # -- Word's bold: the regular face drawn filled and outlined with a thin line ------------
+    @staticmethod
+    def _spot(p):
+        return (round(p[0], 1), round(p[1], 1))
+
+    def _outlines(self, page) -> dict:
+        """{letter's origin: outline width} of the letters drawn filled and outlined."""
+        out = {}
+        for t in page.get_texttrace():
+            if t["type"] == 1 and t.get("linewidth"):
+                for c in t["chars"]:
+                    out[self._spot(c[2])] = t["linewidth"]
+        return out
+
+    def _weights(self, ln, marks) -> list:
+        """Each letter's outline width (None: not outlined)."""
+        return [marks.get(self._spot(c["origin"])) for s in ln["spans"] for c in s["chars"]]
+
+    @staticmethod
+    def _looks_bold(ln, weights) -> bool:
+        """Bold as one sees it: a bold face, or most letters outlined (Word's made-up bold)."""
+        s = ln["spans"][0]
+        if s["flags"] & 16 or "bold" in s["font"].lower():
+            return True
+        chars = [c for sp in ln["spans"] for c in sp["chars"]]
+        seen = [w for c, w in zip(chars, weights) if not c["c"].isspace()]
+        return bool(seen) and sum(1 for w in seen if w) * 2 > len(seen)
+
+    @staticmethod
+    def _carry_weights(old, new, weights) -> list:
+        """Each new letter gets the outline of the old letter it stands for; a letter put in
+        gets that of the letter before it."""
+        if not weights:
+            return [None] * len(new)
+        out = [None] * len(new)
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            for k in range(j2 - j1):
+                if tag in ("equal", "replace") and i1 + k < i2:
+                    i = i1 + k
+                else:
+                    i = i1 - 1 if i1 > 0 else 0
+                out[j1 + k] = weights[min(i, len(weights) - 1)]
+        return out
+
+    @staticmethod
+    def _put_runs(page, kind, at, d, text, weights, size, base, color, turn):
+        """Text written run by run: outlined letters as they were (the width kept as a part
+        of the size: base is the size they had), the others plain. at is displayed space,
+        d the line's direction on the unturned page."""
+        pos, step = Point(at) * page.derotation_matrix, Point(d)
+        i = 0
+        while i < len(text):
+            j = i + 1
+            while j < len(text) and weights[j] == weights[i]:
+                j += 1
+            run, w = text[i:j], weights[i]
+            if run.strip():
+                kind.put(pos * page.rotation_matrix, run, size, color, rotate=turn,
+                         mode=2 if w else 0, border=(w / base) if w else None)
+            pos = pos + step * kind.width(run, size)
+            i = j
+
+    @staticmethod
+    def _span_style(s):
+        """The look of a span, as text is written again: size, colour, weight, kind of face."""
+        c = s["color"]
+        return {"size": s["size"], "color": ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255),
+                "bold": bool(s["flags"] & 16) or "bold" in s["font"].lower(),
+                "italic": bool(s["flags"] & 2) or "italic" in s["font"].lower(),
+                "serif": bool(s["flags"] & 4), "mono": bool(s["flags"] & 8)}
 
     @staticmethod
     def _remove_strips(doc, pno, strips):
         page = doc.load_page(pno)
+        widths = strokes.plan(page)
         for r in strips:
             page.add_redact_annot(r, fill=False, cross_out=False)
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                               text=pymupdf.PDF_REDACT_TEXT_REMOVE)
         page = None
-        return doc.load_page(pno)
+        page = doc.load_page(pno)
+        strokes.keep(page, widths)  # Word's bold outlines keep their width
+        return page
 
     def _line_strips(self, pno, chars, turn, own):
         """Strips that remove exactly these characters, found by trying on a copy.
@@ -1156,6 +1281,7 @@ class Features(EditEngine):
     def _text_blocks(self, page):
         """[{lines, texts, rect, movable}] numbered as `_raw_lines` numbers lines."""
         raw = page.get_text("rawdict", flags=self._flags(page))
+        skip = self._not_text(page)
         out, n = [], 0
         for block in raw["blocks"]:
             lines = []
@@ -1163,7 +1289,7 @@ class Features(EditEngine):
                 if ln["spans"]:
                     ln["n"] = n
                     n += 1
-                    if self._line_text(ln).strip():
+                    if self._line_text(ln).strip() and not (skip and self._within(ln["bbox"], skip)):
                         lines.append(ln)
             if not lines:
                 continue
@@ -1215,23 +1341,25 @@ class Features(EditEngine):
         k = n.width / o.width
         rot = page.rotation_matrix
         put = []
+        marks = self._outlines(page)
         for ln in chosen:
             s = ln["spans"][0]
             c = s["color"]
             at = Point(ln["spans"][0]["chars"][0]["origin"]) * rot
+            ws = self._weights(ln, marks)
             put.append((self._line_text(ln), at, {
-                "size": s["size"] * k,
+                "size": s["size"] * k, "base": s["size"],
                 "color": ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255),
-                "bold": bool(s["flags"] & 16) or "bold" in s["font"].lower(),
+                "bold": (bool(s["flags"] & 16) or "bold" in s["font"].lower()) and not any(ws),
                 "italic": bool(s["flags"] & 2), "serif": bool(s["flags"] & 4),
-                "mono": bool(s["flags"] & 8)}))
+                "mono": bool(s["flags"] & 8)}, ln["dir"], ws))
         page = None
         page = self._cut_block(pno, chosen, turn)
-        for text, at, st in put:
+        for text, at, st, d, ws in put:
             kind = _Type(page, text, serif=st["serif"], mono=st["mono"], bold=st["bold"],
                          italic=st["italic"])
             where = Point(n.x0 + (at.x - o.x0) * k, n.y0 + (at.y - o.y0) * k)
-            kind.put(where, text, st["size"], st["color"], rotate=turn)
+            self._put_runs(page, kind, where, d, text, ws, st["size"], st["base"], st["color"], turn)
         return self._same(pno)
 
     def _date_site(self, pno, xref, rect):
@@ -1517,11 +1645,13 @@ class Features(EditEngine):
                 doc.xref_set_key(x, "Subtype", "/Square")
             page = None
             page = doc.load_page(pno)
+        widths = strokes.plan(page)
         for r, color in boxes:
             page.add_redact_annot(r, fill=color, cross_out=False)
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                               text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+        strokes.keep(page, widths)  # Word's bold outlines keep their width
         for x in foreign:
             doc.xref_set_key(x, "Subtype", "/Redact")
 
