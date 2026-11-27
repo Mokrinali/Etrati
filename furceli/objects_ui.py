@@ -59,6 +59,8 @@ class ObjectBar(QFrame):
         self.del_btn.setAccessibleName("წაშლა")
         self.del_btn.clicked.connect(self.delete.emit)
         lay.addWidget(self.del_btn)
+        # what a date has not: its size follows its font size, it is not turned
+        self._sizing = [lay.itemAt(i).widget() for i in range(lay.count() - 2)]
         self._ratio = 1.0
         self._w.editingFinished.connect(lambda: self._edited(self._w))
         self._h.editingFinished.connect(lambda: self._edited(self._h))
@@ -81,6 +83,10 @@ class ObjectBar(QFrame):
         f.setFrameShape(QFrame.Shape.VLine)
         f.setObjectName("objectBarLine")
         return f
+
+    def set_kind(self, kind):
+        for w in self._sizing:
+            w.setVisible(kind != "date")
 
     def show_size(self, w_pt, h_pt):
         self._ratio = h_pt / w_pt if w_pt else 1.0
@@ -201,4 +207,165 @@ class CopyDialog(QDialog):
         if self.some.isChecked() and not self.range.text().strip():
             QMessageBox.warning(self, self.windowTitle(), "ჩაწერეთ გვერდები, მაგ.: 2-5, 8")
             return
+        self.accept()
+
+
+MONTHS = ["იანვარი", "თებერვალი", "მარტი", "აპრილი", "მაისი", "ივნისი", "ივლისი", "აგვისტო",
+          "სექტემბერი", "ოქტომბერი", "ნოემბერი", "დეკემბერი"]
+DATE_FORMATS = 3  # 27.11.2026 / 27 ნოემბერი 2026 / 2026-11-27
+
+
+def date_text(day, fmt: int) -> str:
+    if fmt == 1:
+        return f"{day.day} {MONTHS[day.month - 1]} {day.year}"
+    if fmt == 2:
+        return day.strftime("%Y-%m-%d")
+    return day.strftime("%d.%m.%Y")
+
+
+class DateDialog(QDialog):
+    """Which date, how it is written, its font, size and colour, and on which pages."""
+
+    FONTS = [("noto", "Noto Sans Georgian"), ("sylfaen", "Sylfaen"), ("segoeui", "Segoe UI")]
+    COLORS = [((0, 0, 0), "შავი"), ((0.06, 0.13, 0.42), "მუქი ლურჯი"),
+              ((0.18, 0.44, 0.84), "ლურჯი"), ((0.82, 0.13, 0.13), "წითელი")]  # written into the PDF
+    last = {"format": 1, "font": "sylfaen", "size": 11.0, "color": 1}  # this run's last choice
+
+    def __init__(self, page, total, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QComboBox, QDateEdit, QWidget
+        self.setWindowTitle("თარიღის ჩასმა")
+        self._page, self._total = page, total
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        lay.addWidget(CopyDialog._title("თარიღი"))
+        self.today = QRadioButton("დღევანდელი")
+        self.other = QRadioButton("სხვა:")
+        self.day = QDateEdit(QDate.currentDate())
+        self.day.setCalendarPopup(True)
+        self.day.setDisplayFormat("dd.MM.yyyy")
+        self.day.dateChanged.connect(lambda _: self.other.setChecked(True))
+        when = QButtonGroup(self)
+        when.addButton(self.today)
+        when.addButton(self.other)
+        lay.addWidget(self.today)
+        row = QHBoxLayout()
+        row.addWidget(self.other)
+        row.addWidget(self.day)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.today.setChecked(True)
+        lay.addWidget(CopyDialog._title("ფორმატი"))
+        self._formats = QButtonGroup(self)
+        self._format_buttons = []
+        for f in range(DATE_FORMATS):
+            b = QRadioButton()
+            self._formats.addButton(b, f)
+            self._format_buttons.append(b)
+            lay.addWidget(b)
+        self._formats.button(self.last["format"]).setChecked(True)
+        self.today.toggled.connect(self._samples)
+        self.day.dateChanged.connect(self._samples)
+        self._samples()
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+        for col, title in enumerate(("შრიფტი", "ზომა", "ფერი")):
+            grid.addWidget(CopyDialog._title(title), 0, col)
+        self.font = QComboBox()
+        for key, name in self.FONTS:
+            self.font.addItem(name, key)
+        self.font.setCurrentIndex([k for k, _ in self.FONTS].index(self.last["font"]))
+        grid.addWidget(self.font, 1, 0)
+        self.size = QDoubleSpinBox()
+        self.size.setRange(4, 200)
+        self.size.setDecimals(0)
+        self.size.setSuffix(" pt")
+        self.size.setValue(self.last["size"])
+        grid.addWidget(self.size, 1, 1)
+        swatches = QWidget()
+        sl = QHBoxLayout(swatches)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(6)
+        self._colors = QButtonGroup(self)
+        for i, (rgb, name) in enumerate(self.COLORS):
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setFixedSize(24, 24)
+            b.setToolTip(name)
+            b.setAccessibleName(name)
+            b.setObjectName("swatch")
+            r, g, bl = (round(c * 255) for c in rgb)
+            b.setStyleSheet(f"QToolButton#swatch {{ background: rgb({r},{g},{bl}); border-radius: 12px; }}")
+            self._colors.addButton(b, i)
+            sl.addWidget(b)
+        self._colors.button(self.last["color"]).setChecked(True)
+        grid.addWidget(swatches, 1, 2)
+        lay.addLayout(grid)
+        lay.addWidget(CopyDialog._title("გამოყენება"))
+        self.only = QRadioButton(f"ეს გვერდი ({page + 1})")
+        self.all = QRadioButton(f"ყველა გვერდი ({total})")
+        self.some = QRadioButton("გვერდები:")
+        self.range = QLineEdit()
+        self.range.setPlaceholderText("მაგ.: 2-5, 8")
+        self.range.textEdited.connect(lambda _: self.some.setChecked(True))
+        where = QButtonGroup(self)
+        apply_row = QHBoxLayout()
+        for b in (self.only, self.all, self.some):
+            where.addButton(b)
+            apply_row.addWidget(b)
+        apply_row.addWidget(self.range, 1)
+        lay.addLayout(apply_row)
+        self.only.setChecked(True)
+        note = QLabel("თარიღი ჩაიწერება ჩვეულებრივ ტექსტად: ყველა პროგრამაში ჩანს. ჩასმის შემდეგ "
+                      "„ობიექტებით“ თითოეული ცალკე გადაიტანება ან წაიშლება.")
+        note.setWordWrap(True)
+        note.setObjectName("muted")
+        lay.addWidget(note)
+        from .forms import _buttons
+        lay.addWidget(_buttons(self, "ჩასმა", self._check))
+        self.setMinimumWidth(460)
+
+    def _day(self):
+        import datetime
+        if self.today.isChecked():
+            return datetime.date.today()
+        d = self.day.date()
+        return datetime.date(d.year(), d.month(), d.day())
+
+    def _samples(self, *_):
+        day = self._day()
+        for f, b in enumerate(self._format_buttons):
+            b.setText(date_text(day, f))
+
+    def text(self):
+        return date_text(self._day(), self._formats.checkedId())
+
+    def style(self):
+        return {"font": self.font.currentData(), "size": float(self.size.value()),
+                "color": self.COLORS[self._colors.checkedId()][0]}
+
+    def pages(self, quiet=False):
+        """Every page it goes on, its own included; None when the range is wrong."""
+        if self.only.isChecked():
+            return [self._page]
+        if self.all.isChecked():
+            return list(range(self._total))
+        try:
+            chosen = files.parse_group(self.range.text(), self._total)
+        except ValueError as e:
+            if not quiet:
+                QMessageBox.warning(self, self.windowTitle(), str(e))
+            return None
+        return sorted(set(chosen) | {self._page})
+
+    def _check(self):
+        if self.some.isChecked() and not self.range.text().strip():
+            QMessageBox.warning(self, self.windowTitle(), "ჩაწერეთ გვერდები, მაგ.: 2-5, 8")
+            return
+        if self.pages() is None:
+            return
+        DateDialog.last = {"format": self._formats.checkedId(), "font": self.font.currentData(),
+                           "size": float(self.size.value()), "color": self._colors.checkedId()}
         self.accept()

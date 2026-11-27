@@ -233,7 +233,8 @@ class MainWindow(QMainWindow):
              ("rect", "ოთხკუთხედი", 0xE7FB), ("ellipse", "ელიფსი", 0xEA3A),
              ("line", "ხაზი", 0xE738), ("arrow", "ისარი", 0xE72A), ("cloud", "ღრუბელი", 0xE753),
              ("stamp", "შტამპი", 0xE8FB),
-             ("image", "სურათი", 0xEB9F), ("object", "ობიექტები", 0xE7C2),
+             ("image", "სურათი", 0xEB9F), ("date", "თარიღი", 0xE787),
+             ("object", "ობიექტები", 0xE7C2),
              ("edit", "ტექსტის შეცვლა", 0xE70F),
              ("redact", "დასაფარის მონიშვნა", 0xE75C), ("field", "ფორმის ველი", 0xE9D5)]
 
@@ -294,6 +295,7 @@ class MainWindow(QMainWindow):
                           self.a_redgo, self.a_scrub, self.a_compress, self.a_flat,
                           self.tool_acts["edit"], self.tool_acts["redact"],
                           self.tool_acts["field"], self.tool_acts["image"], self.tool_acts["object"],
+                          self.tool_acts["date"],
                           self.a_sigpic]
 
     def _use_tool(self, name):
@@ -505,7 +507,7 @@ class MainWindow(QMainWindow):
         c.addActions([self.a_sigpic, self.a_color, self.a_author, self.a_flat])
         i = mb.addMenu("შიგთავსი")
         i.addActions([self.tool_acts["edit"], self.tool_acts["object"], self.tool_acts["text"],
-                      self.tool_acts["image"], self.tool_acts["field"]])
+                      self.tool_acts["image"], self.tool_acts["date"], self.tool_acts["field"]])
         i.addSeparator()
         i.addActions([self.a_ocr, self.a_water, self.a_head, self.a_bates, self.a_back])
         z = mb.addMenu("უსაფრთხოება")
@@ -833,10 +835,13 @@ class MainWindow(QMainWindow):
         for a in self._edit_actions:
             a.setEnabled(bool(on and doc.can_edit))
         tool = doc.view.tool if on else "select"
-        if tool in self.tool_acts and not self.tool_acts[tool].isChecked():
-            self.tool_acts[tool].blockSignals(True)
-            self.tool_acts[tool].setChecked(True)
-            self.tool_acts[tool].blockSignals(False)
+        # Only the tool in use is checked. Changed from the code (a picture just put in), the
+        # group never hears of it, so every button is set here, not only the new one.
+        for name, act in self.tool_acts.items():
+            if act.isChecked() != (name == tool):
+                act.blockSignals(True)
+                act.setChecked(name == tool)
+                act.blockSignals(False)
         ai = getattr(doc, "ai", None) if on else None
         self.a_ai.blockSignals(True)
         self.a_ai.setChecked(ai is not None and not ai.isHidden())

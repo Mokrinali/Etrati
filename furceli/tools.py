@@ -169,6 +169,9 @@ class ToolsMixin:
         if tool == "cancel":
             self.set_tool("select")
             return
+        if tool == "date":
+            self._add_date(pno, data["point"])
+            return
         if self._moving and tool == "note":
             self._place_comment(pno, data)
             return
@@ -302,16 +305,22 @@ class ToolsMixin:
 
     # -- pictures already on the page (HANDOFF.md, item 7) -----------------
     def _load_objects(self, v, pno):
-        v.objects[pno] = self._quiet("images", pno) or []
+        v.objects[pno] = self._quiet("objects", pno) or []
+
+    @staticmethod
+    def _kind(o):
+        return "date" if o.get("kind") == "date" else "image"
 
     _pick_object = None   # (page, rectangle): chosen again once the edit is shown
     _ask_copy = False     # a picture just put in: ask about the other pages
 
     def _object_moved(self, pno, o, rect):
         self._pick_object = (pno, tuple(rect))
-        self.edit(("image_move", pno, o["xref"], tuple(o["rect"]), tuple(rect)))
+        self.edit((self._kind(o) + "_move", pno, o["xref"], tuple(o["rect"]), tuple(rect)))
 
     def _object_turned(self, pno, o, degrees):
+        if self._kind(o) == "date":
+            return
         x0, y0, x1, y1 = o["rect"]
         cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
         self._pick_object = (pno, (cx - h / 2, cy - w / 2, cx + h / 2, cy + w / 2))
@@ -322,13 +331,27 @@ class ToolsMixin:
         w, h = self.sizes[pno]
         x0, y0, x1, y1 = o["rect"]
         near = (0 if (x0 + x1) / 2 < w / 2 else 1, 0 if (y0 + y1) / 2 < h / 2 else 1)
-        dlg = CopyDialog(pno, len(self.sizes), near, parent=self)
+        what = "თარიღი" if self._kind(o) == "date" else "სურათი"
+        dlg = CopyDialog(pno, len(self.sizes), near, what, parent=self)
         if not dlg.exec():
             return
         pages = dlg.pages(quiet=True)
         if pages:
             self._pick_object = (pno, tuple(o["rect"]))
-            self.edit(("image_copy", pno, o["xref"], tuple(o["rect"]), pages, dlg.anchor()))
+            self.edit((self._kind(o) + "_copy", pno, o["xref"], tuple(o["rect"]), pages,
+                       dlg.anchor()))
+
+    def _add_date(self, pno, point):
+        """The date tool: a click on a page, then which date, how, and on which pages."""
+        from .objects_ui import DateDialog
+        dlg = DateDialog(pno, len(self.sizes), parent=self)
+        if not dlg.exec():
+            return
+        x, y = point
+        self.set_tool("object")  # the new date comes chosen: move it, put it on other pages
+        self._pick_object = (pno, (x - 2, y - 2, x + 2000, y + 2000))
+        if not self.edit(("date", pno, (x, y), dlg.text(), dlg.style(), dlg.pages(quiet=True))):
+            self._pick_object = None
 
     def _after_objects(self, kind):
         """After an edit: the picture worked on is chosen again (its bar stays at hand)."""
@@ -371,7 +394,7 @@ class ToolsMixin:
         return self._add_image(pno, rect, path)
 
     def _object_deleted(self, pno, o):
-        self.edit(("image_del", pno, o["xref"], tuple(o["rect"])))
+        self.edit((self._kind(o) + "_del", pno, o["xref"], tuple(o["rect"])))
 
     def _object_swap(self, pno, o):
         path, _ = QFileDialog.getOpenFileName(self, "სურათის ჩანაცვლება", "",

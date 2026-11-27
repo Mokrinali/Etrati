@@ -341,5 +341,12 @@
   "label": "პროპორციის დაცვა",
   "current": "",
   "status": "new"
+ },
+ {
+  "file": "svg/date.svg",
+  "code": "window.py tool_acts['date']",
+  "label": "თარიღი",
+  "current": "",
+  "status": "new"
  }
 ]

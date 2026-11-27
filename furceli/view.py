@@ -650,7 +650,7 @@ class PageView(QAbstractScrollArea):
     BOX_TOOLS = {"text", "rect", "ellipse", "stamp", "image", "redact", "field", "signbox",
                  "cloud"}
     LINE_TOOLS = {"line", "arrow"}
-    CLICK_TOOLS = {"note", "edit", "point"}  # point: ჩართალა, aligning by hand
+    CLICK_TOOLS = {"note", "edit", "point", "date"}  # point: ჩართალა, aligning by hand
     TEXT_TOOLS = {"highlight", "underline", "strikeout"}
 
     def set_tool(self, name):
@@ -717,6 +717,7 @@ class PageView(QAbstractScrollArea):
             bar.hide()
             return
         r = self._obj[1]["rect"]
+        bar.set_kind(self._obj[1].get("kind", "image"))
         bar.show_size(r[2] - r[0], r[3] - r[1])
         bar.adjustSize()
         o = QPointF(self._origin())

@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import html
 import io
+import json
 import math
 import os
 import re
@@ -847,6 +848,167 @@ class Features(EditEngine):
         self._carry(info, sx, m, Matrix(1, 0, 0, 1, -cx, -cy) * Matrix(degrees)
                     * Matrix(1, 0, 0, 1, cx, cy))
         return self._same(pno)
+
+    # -- dates (design canvas "ETRATI: სურათი და თარიღი") --------------------
+    # A date is real text on the page, drawn through a form of its own ("q /Name Do Q") whose
+    # /Matrix holds its place: moving changes that matrix, deleting takes out its "Do". The
+    # form is marked /ETRATI /Date and keeps its text and style for copies.
+    DATE_FONTS = {"noto": os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets",
+                                       "fonts", "NotoSansGeorgian-Regular.ttf"),
+                  "sylfaen": os.path.join(FONTS, "sylfaen.ttf"),
+                  "segoeui": os.path.join(FONTS, "segoeui.ttf")}
+
+    @staticmethod
+    def _same_place(src_size, rect, size, anchor):
+        """The place of a rectangle on a page of another size: the same distance from the same
+        point of the page (anchor: fractions of width and height), kept on the page."""
+        ax, ay = (min(max(float(v), 0.0), 1.0) for v in anchor)
+        (sw, sh), (tw, th) = src_size, size
+        x0, y0, x1, y1 = rect
+        w, h = x1 - x0, y1 - y0
+        nx = min(max(ax * tw + (x0 - ax * sw), 0.0), max(tw - w, 0.0))
+        ny = min(max(ay * th + (y0 - ay * sh), 0.0), max(th - h, 0.0))
+        return (nx, ny, nx + w, ny + h)
+
+    def _dates_drawn(self, page):
+        """[(form xref, name, rect as shown)] of the dates the page draws itself (a deleted
+        one stays among the page's resources but is drawn no more)."""
+        out = []
+        for x, name, invoker, bbox in page.get_xobjects():
+            if (invoker == 0 and self.doc.xref_get_key(x, "ETRATI")[1] == "/Date"
+                    and self._date_uses(page, name)):
+                r = (Rect(bbox) * page.transformation_matrix * page.rotation_matrix).normalize()
+                out.append((x, name, tuple(round(v, 3) for v in r)))
+        return out
+
+    def _date_uses(self, page, name):
+        pattern = re.compile(rb"/" + re.escape(name.encode()) + rb"\s+Do\b")
+        return [(sx, m) for sx in page.get_contents()
+                for m in pattern.finditer(self.doc.xref_stream(sx) or b"")]
+
+    def _date_do(self, page, name):
+        """(stream xref, match) of the one place the page draws a date; None when not once."""
+        found = self._date_uses(page, name)
+        return found[0] if len(found) == 1 else None
+
+    def objects(self, pno):
+        """What the "objects" tool may take on a page: pictures and dates."""
+        out = [dict(o, kind="image") for o in self.images(pno)]
+        page = self.doc.load_page(pno)
+        for x, name, r in self._dates_drawn(page):
+            out.append({"xref": x, "rect": r, "kind": "date",
+                        "movable": self._date_do(page, name) is not None})
+        return out
+
+    def _date_site(self, pno, xref, rect):
+        page = self.doc.load_page(pno)
+        hit = [(x, n, r) for x, n, r in self._dates_drawn(page)
+               if x == xref and all(abs(a - b) <= 1 for a, b in zip(r, rect))]
+        if len(hit) != 1:
+            raise EngineError("stale")
+        site = self._date_do(page, hit[0][1])
+        if site is None:
+            raise EngineError("image_complex")
+        return page, hit[0], site
+
+    def _put_dates(self, places, text, style):
+        """The date drawn on pages: places = [(page, (x, y) top left as shown)]."""
+        size = min(max(float(style.get("size", 11)), 4.0), 200.0)
+        path = self.DATE_FONTS.get(style.get("font"), "")
+        if not os.path.exists(path) or not all(
+                pymupdf.Font(fontfile=path).has_glyph(ord(c)) for c in text if not c.isspace()):
+            path = _font_file(text)  # a font with every letter of it
+        data = _subset(path, text)
+        w = pymupdf.Font(fontbuffer=data).text_length(text, fontsize=size) + 2
+        h = size * 1.35
+        src = pymupdf.open()
+        sp = src.new_page(width=w, height=h)
+        sp.insert_font(fontname="D", fontbuffer=data)
+        color = tuple(float(c) for c in style.get("color", (0, 0, 0)))
+        sp.insert_text((1, size * 1.05), text, fontname="D", fontsize=size, color=color)
+        sp = None
+        info = json.dumps({"text": text, "style": {"font": style.get("font"), "size": size,
+                                                   "color": list(color)}}, ensure_ascii=False)
+        done = []
+        try:
+            for q, (x, y) in places:
+                tp = self.doc.load_page(q)
+                tw, th = tp.rect.width, tp.rect.height
+                x, y = min(max(float(x), 0.0), max(tw - w, 0.0)), min(max(float(y), 0.0), max(th - h, 0.0))
+                before = {i[0] for i in tp.get_xobjects()}
+                tp.show_pdf_page(Rect(x, y, x + w, y + h) * tp.derotation_matrix, src, 0,
+                                 rotate=tp.rotation)
+                new = [i[0] for i in tp.get_xobjects() if i[2] == 0 and i[0] not in before]
+                tp = None
+                if len(new) != 1:
+                    raise EngineError("image_complex")
+                self.doc.xref_set_key(new[0], "ETRATI", "/Date")
+                self.doc.xref_set_key(new[0], "ETRATIinfo", pymupdf.get_pdf_str(info))
+                done.append(q)
+        finally:
+            src.close()
+        return done
+
+    def _op_date(self, pno, at, text, style, pages):
+        """A date at a point (its top left, as shown) on its page and, at the same distance
+        from the nearest corner, on the other pages listed."""
+        text = str(text).strip()
+        if not text or len(text) > 200:
+            raise EngineError("bad_op")
+        page = self.doc.load_page(pno)
+        size = (page.rect.width, page.rect.height)
+        page = None
+        # the place of the first one decides the corner the others are measured from
+        first = self._put_dates([(pno, at)], text, style)
+        x, name, rect = self._dates_drawn(self.doc.load_page(pno))[-1]
+        near = (0 if (rect[0] + rect[2]) / 2 < size[0] / 2 else 1,
+                0 if (rect[1] + rect[3]) / 2 < size[1] / 2 else 1)
+        others = sorted({int(p) for p in pages} - {pno})
+        places = []
+        for q in others:
+            if not 0 <= q < self.doc.page_count:
+                raise EngineError("bad_op")
+            tp = self.doc.load_page(q)
+            places.append((q, self._same_place(size, rect, (tp.rect.width, tp.rect.height), near)[:2]))
+        return self._same(*first, *self._put_dates(places, text, style))
+
+    def _op_date_move(self, pno, xref, old, new):
+        page, (x, _name, rect), _site = self._date_site(pno, xref, old)
+        o = Rect(rect) * page.derotation_matrix
+        n = Rect(new) * page.derotation_matrix
+        o, n = o.normalize(), n.normalize()
+        if n.width < 1 or n.height < 1:
+            raise EngineError("bad_op")
+        to = (Matrix(1, 0, 0, 1, -o.x0, -o.y0) * Matrix(n.width / o.width, 0, 0, n.height / o.height, 0, 0)
+              * Matrix(1, 0, 0, 1, n.x0, n.y0))
+        t0 = page.transformation_matrix  # PDF space -> MuPDF's (y down)
+        kind, mat = self.doc.xref_get_key(x, "Matrix")
+        old_m = Matrix(*map(float, re.findall(r"[-\d.]+", mat))) if kind == "array" else Matrix(1, 0, 0, 1, 0, 0)
+        m = old_m * t0 * to * ~t0
+        self.doc.xref_set_key(x, "Matrix", "[%s]" % " ".join(f"{v:.6g}" for v in tuple(m)))
+        return self._same(pno)
+
+    def _op_date_del(self, pno, xref, rect):
+        _page, _hit, (sx, m) = self._date_site(pno, xref, rect)
+        data = self.doc.xref_stream(sx)
+        self.doc.update_stream(sx, data[:m.start()] + data[m.end():])
+        return self._same(pno)
+
+    def _op_date_copy(self, pno, xref, rect, pages, anchor):
+        page, (x, _name, shown), _site = self._date_site(pno, xref, rect)
+        size = (page.rect.width, page.rect.height)
+        page = None
+        try:
+            info = json.loads(self.doc.xref_get_key(x, "ETRATIinfo")[1])
+        except (ValueError, TypeError):
+            raise EngineError("image_complex")
+        places = []
+        for q in sorted({int(p) for p in pages} - {pno}):
+            if not 0 <= q < self.doc.page_count:
+                raise EngineError("bad_op")
+            tp = self.doc.load_page(q)
+            places.append((q, self._same_place(size, shown, (tp.rect.width, tp.rect.height), anchor)[:2]))
+        return self._same(*self._put_dates(places, info["text"], info["style"]))
 
     def _op_image_copy(self, pno, xref, rect, pages, anchor):
         """The same picture, the same size, on other pages; its place measured from the same
