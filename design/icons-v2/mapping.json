@@ -348,5 +348,26 @@
   "label": "თარიღი",
   "current": "",
   "status": "new"
+ },
+ {
+  "file": "svg/m_distance.svg",
+  "code": "window.py tool_acts['m_distance']",
+  "label": "სიგრძის გაზომვა",
+  "current": "",
+  "status": "new"
+ },
+ {
+  "file": "svg/m_path.svg",
+  "code": "window.py tool_acts['m_path']",
+  "label": "ტეხილის გაზომვა",
+  "current": "",
+  "status": "new"
+ },
+ {
+  "file": "svg/m_area.svg",
+  "code": "window.py tool_acts['m_area']",
+  "label": "ფართობის გაზომვა",
+  "current": "",
+  "status": "new"
  }
 ]

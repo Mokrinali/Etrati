@@ -122,6 +122,8 @@ class PageView(QAbstractScrollArea):
         self._obj = None                   # (page, picture) chosen with the "objects" tool
         self._obj_drag = None              # [mode, start point, anchor, rect being shown]
         self._drop = None                  # (page, rect): where a dragged picture would go
+        self._measure = None               # [page, [points], cursor]: a measurement being drawn
+        self.measure_scales: dict = {}     # page -> its scale (or None), for the live value
         self._stale: dict = {}             # last picture of a page that was just edited
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
@@ -177,6 +179,7 @@ class PageView(QAbstractScrollArea):
         self._sel_a = self._sel_b = None
         self._shape = None
         self.objects, self._obj, self._obj_drag = {}, None, None
+        self._measure, self.measure_scales = None, {}
         self._hide_bar()
         self.sizes = sizes
         if same:  # nothing moved: the reader keeps the exact scroll position
@@ -627,6 +630,8 @@ class PageView(QAbstractScrollArea):
                 drew_object = True
             if self._drop and self._drop[0] == pno:
                 self._paint_drop(p)
+            if self._measure and self._measure[0] == pno:
+                self._paint_measure(p)
             if self._crop and self._crop[0] == pno:
                 keep = self._doc_rect(pno, self._crop_rect())
                 shade = QColor(0, 0, 0, 110)
@@ -655,7 +660,7 @@ class PageView(QAbstractScrollArea):
 
     def set_tool(self, name):
         self.cancel_crop()
-        self.tool, self._shape = name, None
+        self.tool, self._shape, self._measure = name, None, None
         self._obj = self._obj_drag = None
         self._hide_bar()
         cursor = {"select": Qt.CursorShape.ArrowCursor, "edit": Qt.CursorShape.IBeamCursor,
@@ -736,6 +741,98 @@ class PageView(QAbstractScrollArea):
         bar = getattr(self, "_object_bar", None)
         if bar is not None and bar.isVisible():
             bar.hide()
+
+    # -- measuring to scale (design canvas "ETRATI: მასშტაბით გაზომვა") --------
+    MEASURE_TOOLS = {"m_distance": "distance", "m_path": "path", "m_area": "area",
+                     "m_calibrate": "distance"}
+
+    def _measure_point(self, pno, pt):
+        """The page point under the mouse; with Shift, straight across, down or at 45°."""
+        q = self._clamp(pno, self.doc_to_page(pno, pt + QPointF(self._origin())))
+        if (self._measure and self._measure[1]
+                and QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier):
+            import math
+            a = self._measure[1][-1]
+            dx, dy = q.x() - a.x(), q.y() - a.y()
+            r = math.hypot(dx, dy)
+            ang = round(math.atan2(dy, dx) / (math.pi / 4)) * (math.pi / 4)
+            q = self._clamp(pno, QPointF(a.x() + r * math.cos(ang), a.y() + r * math.sin(ang)))
+        return q
+
+    def _measure_press(self, pt):
+        pno = self._measure[0] if self._measure else self._nearest_page(pt)
+        q = self._measure_point(pno, pt)
+        if not self._measure:
+            self._measure = [pno, [q], q]
+        else:
+            self._measure[1].append(q)
+        if self.MEASURE_TOOLS[self.tool] == "distance" and len(self._measure[1]) == 2:
+            self._finish_measure()
+        self.viewport().update()
+
+    def _finish_measure(self):
+        m, self._measure = self._measure, None
+        if m is None:
+            return
+        pno, pts, _ = m
+        need = 3 if self.MEASURE_TOOLS[self.tool] == "area" else 2
+        clean = [pts[0]]
+        for q in pts[1:]:  # a double click must not leave the same point twice
+            if abs(q.x() - clean[-1].x()) + abs(q.y() - clean[-1].y()) > .5:
+                clean.append(q)
+        self.viewport().update()
+        if len(clean) >= need:
+            self.toolDone.emit(self.tool, pno, {"points": [(q.x(), q.y()) for q in clean]})
+
+    def measure_text(self, kind, pts, pno):
+        """The live value: as the engine will count it, at the page's scale."""
+        from . import measure
+        tup = [(q.x(), q.y()) for q in pts]
+        if self.tool == "m_calibrate":
+            return f"ქაღალდზე: {measure.length(tup) * measure.PAPER * 1000:.1f} მმ"
+        if kind == "area" and len(tup) < 3:
+            kind = "path"
+        return measure.label(kind, tup, self.measure_scales.get(pno))
+
+    def _paint_measure(self, p):
+        pno, pts, cursor = self._measure
+        kind = self.MEASURE_TOOLS[self.tool]
+        shown = pts + [cursor]
+        doc = [self.page_to_doc(pno, q) for q in shown]
+        color = theme.color("focus" if kind == "area" or self.tool == "m_calibrate" else "ink-pen")
+        if kind == "area" and len(doc) >= 3:
+            fill = QColor(color)
+            fill.setAlpha(40)
+            from PySide6.QtGui import QPolygonF
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fill)
+            p.drawPolygon(QPolygonF(doc))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(color, 2 * self.dpr))
+        for a, b in zip(doc, doc[1:]):
+            p.drawLine(a, b)
+        if kind == "area" and len(doc) >= 3:
+            p.setPen(QPen(color, 1.5 * self.dpr, Qt.PenStyle.DashLine))
+            p.drawLine(doc[-1], doc[0])
+        p.setPen(QPen(color, 2 * self.dpr))
+        p.setBrush(theme.color("paper"))
+        r = 4 * self.dpr
+        for q in doc[:-1]:
+            p.drawEllipse(q, r, r)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        text = self.measure_text(kind, shown, pno)
+        f = p.font()
+        f.setPixelSize(round(13 * self.dpr))
+        p.setFont(f)
+        box = p.fontMetrics().boundingRect(text).adjusted(-8 * self.dpr, -5 * self.dpr,
+                                                          8 * self.dpr, 5 * self.dpr)
+        box.moveTopLeft((doc[-1] + QPointF(16 * self.dpr, 12 * self.dpr)).toPoint())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.color("ink"))
+        p.drawRoundedRect(QRectF(box), 6 * self.dpr, 6 * self.dpr)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(theme.color("surface-raised"))
+        p.drawText(QRectF(box), Qt.AlignmentFlag.AlignCenter, text)
 
     def show_drop(self, pno=None, rect=None):
         drop = (pno, tuple(rect)) if rect is not None else None
@@ -1012,6 +1109,9 @@ class PageView(QAbstractScrollArea):
         if self.tool == "object":
             self._object_press(pt)
             return
+        if self.tool in self.MEASURE_TOOLS:
+            self._measure_press(pt)
+            return
         if self.tool in self.BOX_TOOLS | self.LINE_TOOLS | {"ink"}:
             pno = self._nearest_page(pt)
             q = self._clamp(pno, self.doc_to_page(pno, pt + QPointF(self._origin())))
@@ -1044,6 +1144,10 @@ class PageView(QAbstractScrollArea):
             return
         if self._obj_drag and e.buttons() & Qt.MouseButton.LeftButton:
             self._object_drag(pt)
+            return
+        if self._measure:
+            self._measure[2] = self._measure_point(self._measure[0], pt)
+            self.viewport().update()
             return
         if self.tool == "object":
             pno = self._nearest_page(pt)
@@ -1155,6 +1259,10 @@ class PageView(QAbstractScrollArea):
     def mouseDoubleClickEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton or not self.sizes or self.cropping:
             return
+        if self.tool in self.MEASURE_TOOLS:  # a path or an area ends with a double click
+            if self._measure and self.MEASURE_TOOLS[self.tool] != "distance":
+                self._finish_measure()
+            return
         if self.tool != "select":
             self.mousePressEvent(e)
             return
@@ -1207,6 +1315,17 @@ class PageView(QAbstractScrollArea):
             self.cancel_crop()
         elif k == Qt.Key.Key_Escape and self._shape:
             self._shape = None
+            self.viewport().update()
+        elif self._measure and k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._finish_measure()
+        elif self._measure and k == Qt.Key.Key_Backspace:
+            if len(self._measure[1]) > 1:
+                self._measure[1].pop()
+            else:
+                self._measure = None
+            self.viewport().update()
+        elif self._measure and k == Qt.Key.Key_Escape:
+            self._measure = None
             self.viewport().update()
         elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._obj and not self._obj_drag:
             self.objectDeleted.emit(*self._obj)

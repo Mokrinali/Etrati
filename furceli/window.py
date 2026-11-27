@@ -168,6 +168,8 @@ class MainWindow(QMainWindow):
         self.a_props = self._act("ფაილის თვისებები", self.properties, "Ctrl+D", 0xE946)
         self.a_copy = self._act("კოპირება", lambda: self.doc.copy(), "Ctrl+C")
         self.a_paste = self._act("სურათის ჩასმა ბუფერიდან", self._paste, "Ctrl+V")
+        self.a_scale = self._act("მასშტაბი…", lambda: self.doc.set_scale())
+        self.a_mlist = self._act("გაზომვების სია…", lambda: self.doc.show_measures())
         self.a_find = self._act("ძიება", lambda: self.doc.open_search(), "Ctrl+F", 0xE721)
         self.a_next = self._act("შემდეგი შედეგი", lambda: self.doc.next_hit(1), "F3")
         self.a_prev = self._act("წინა შედეგი", lambda: self.doc.next_hit(-1), "Shift+F3")
@@ -235,6 +237,8 @@ class MainWindow(QMainWindow):
              ("stamp", "შტამპი", 0xE8FB),
              ("image", "სურათი", 0xEB9F), ("date", "თარიღი", 0xE787),
              ("object", "ობიექტები", 0xE7C2),
+             ("m_distance", "სიგრძის გაზომვა", 0xE7C2), ("m_path", "ტეხილის გაზომვა", 0xE7C2),
+             ("m_area", "ფართობის გაზომვა", 0xE7C2),
              ("edit", "ტექსტის შეცვლა", 0xE70F),
              ("redact", "დასაფარის მონიშვნა", 0xE75C), ("field", "ფორმის ველი", 0xE9D5)]
 
@@ -295,7 +299,7 @@ class MainWindow(QMainWindow):
                           self.a_redgo, self.a_scrub, self.a_compress, self.a_flat,
                           self.tool_acts["edit"], self.tool_acts["redact"],
                           self.tool_acts["field"], self.tool_acts["image"], self.tool_acts["object"],
-                          self.tool_acts["date"],
+                          self.tool_acts["date"], self.a_scale,
                           self.a_sigpic]
 
     def _use_tool(self, name):
@@ -460,9 +464,12 @@ class MainWindow(QMainWindow):
         self.addToolBar(t2)
         self.toolbar2 = t2
         for name, _, _ in self.TOOLS:
-            if name in ("note", "ink", "stamp", "edit"):
+            if name in ("note", "ink", "stamp", "edit", "m_distance"):
                 t2.addSeparator()
             t2.addAction(self.tool_acts[name])
+            if name == "m_area":
+                t2.addAction(self.a_scale)
+                t2.addAction(self.a_mlist)
         t2.addSeparator()
         t2.addAction(self.a_sigpic)
         self.swatches = ColorSwatches()
@@ -525,6 +532,12 @@ class MainWindow(QMainWindow):
         panes = ch.addMenu("ეკრანის გაყოფა")
         panes.addActions([self.a_split_v, self.a_split_h, self.a_split_off])
         ch.addAction(self.a_link)
+        ch.addSeparator()
+        meas = ch.addMenu("გაზომვა")
+        meas.addActions([self.tool_acts["m_distance"], self.tool_acts["m_path"],
+                         self.tool_acts["m_area"]])
+        meas.addSeparator()
+        meas.addActions([self.a_scale, self.a_mlist])
         v = mb.addMenu("ხედი")
         v.addActions([self.a_in, self.a_out, self.a_100, self.a_width, self.a_page])
         v.addSeparator()
@@ -850,8 +863,13 @@ class MainWindow(QMainWindow):
             for a in self.a_gray_by:
                 a.setEnabled(doc.info["can_modify"])
             for name in ("highlight", "underline", "strikeout", "note", "text", "ink", "rect",
-                         "ellipse", "line", "arrow", "cloud", "stamp"):
+                         "ellipse", "line", "arrow", "cloud", "stamp", "m_distance", "m_path",
+                         "m_area"):
                 self.tool_acts[name].setEnabled(doc.info["can_annotate"])
+            s = doc.page_scale() if hasattr(doc, "page_scale") else None
+            self.a_scale.setText("მასშტაბი…" if s is None else
+                                 f"მასშტაბი: {s.get('label') or '?'} · "
+                                 f"{dict(m='მ', cm='სმ', mm='მმ')[s['unit']]}")
             self.a_redgo.setEnabled(doc.info["can_modify"] and bool(doc.view.marks))
             self.a_redclear.setEnabled(bool(doc.view.marks))
             self.a_sign.setEnabled(not doc.dirty)

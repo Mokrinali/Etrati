@@ -21,7 +21,7 @@ import zlib
 import pymupdf
 from pymupdf import Matrix, Point, Quad, Rect
 
-from . import layers, legacy
+from . import layers, legacy, measure
 from .engine import EditEngine, EngineError, _open_source, _to_pdf, plain_char, view_matrix
 
 PUNCT = ".,;:!?\"'()[]{}«»„“”‘’—–-…/\\"
@@ -200,7 +200,8 @@ class Features(EditEngine):
             out.append({"index": i, "type": a.type[1], "rect": tuple(a.rect * page.rotation_matrix),
                         "text": info.get("content") or "", "author": info.get("title") or "",
                         "date": info.get("modDate") or "",
-                        "cloud": self.doc.xref_get_key(a.xref, "IT")[1] == "/PolygonCloud"})
+                        "cloud": self.doc.xref_get_key(a.xref, "IT")[1] == "/PolygonCloud",
+                        "measure": self._measure_kind(a.xref)})
         return out
 
     def all_annots(self):
@@ -848,6 +849,197 @@ class Features(EditEngine):
         self._carry(info, sx, m, Matrix(1, 0, 0, 1, -cx, -cy) * Matrix(degrees)
                     * Matrix(1, 0, 0, 1, cx, cy))
         return self._same(pno)
+
+    # -- measuring to scale (design canvas "ETRATI: მასშტაბით გაზომვა") --------
+    # A page's scale is kept twice: as the standard /VP viewport with its /Measure (what
+    # Acrobat and Bluebeam read) and as our own exact record. A measurement is a standard
+    # Line, PolyLine or Polygon annotation (/IT ...Dimension, /Measure) whose look, label
+    # included, is drawn here, in a font that has the Georgian unit names.
+    MEASURE_COLORS = {"distance": (0.82, 0.13, 0.13), "path": (0.82, 0.13, 0.13),
+                      "area": (0.18, 0.44, 0.84)}
+    MEASURE_IT = {"distance": "/LineDimension", "path": "/PolyLineDimension",
+                  "area": "/PolygonDimension"}
+
+    def scale(self, pno):
+        """{factor (metres per point), unit, digits, label} of a page, or None."""
+        page = self.doc.load_page(pno)
+        kind, raw = self.doc.xref_get_key(page.xref, "ETRATIscale")
+        if kind == "string":
+            try:
+                s = json.loads(raw)
+                if s["unit"] in measure.UNITS and float(s["factor"]) > 0:
+                    return {"factor": float(s["factor"]), "unit": s["unit"],
+                            "digits": int(s["digits"]), "label": str(s.get("label", ""))}
+            except (ValueError, KeyError, TypeError):
+                pass
+        # a scale written by another program: the first number format of its viewport
+        kind, vp = self.doc.xref_get_key(page.xref, "VP")
+        if kind == "array" and "/Measure" in vp:
+            c = re.search(r"/X\s*\[\s*<<[^>]*?/C\s+([-\d.eE+]+)", vp)
+            u = re.search(r"/X\s*\[\s*<<[^>]*?/U\s*\(([^)]*)\)", vp)
+            unit = u.group(1).strip() if u else ""
+            if c and unit in measure.UNITS and float(c.group(1)) > 0:
+                return {"factor": float(c.group(1)) / measure.UNITS[unit][0], "unit": unit,
+                        "digits": 2, "label": ""}
+        return None
+
+    def _op_scale(self, pages, factor, unit, digits, label):
+        if unit not in measure.UNITS or not 0 < float(factor) < 1e6 or not 0 <= int(digits) <= 4:
+            raise EngineError("bad_op")
+        s = {"factor": float(factor), "unit": unit, "digits": int(digits), "label": str(label)[:40]}
+        done = []
+        for q in sorted({int(p) for p in pages}):
+            if not 0 <= q < self.doc.page_count:
+                raise EngineError("bad_op")
+            page = self.doc.load_page(q)
+            mb = page.mediabox
+            self.doc.xref_set_key(page.xref, "ETRATIscale", pymupdf.get_pdf_str(json.dumps(s)))
+            self.doc.xref_set_key(page.xref, "VP", f"[<</Type/Viewport/Name(ETRATI)/BBox["
+                                  f"{mb.x0:g} {mb.y0:g} {mb.x1:g} {mb.y1:g}]/Measure "
+                                  f"{measure.measure_dict(s)}>>]")
+            page = None
+            for _i, a, *_rest in self._measure_annots(self.doc.load_page(q)):
+                self._draw_measure(q, a.xref)  # counted again at the new scale
+            done.append(q)
+        return self._same(*done)
+
+    def _measure_annots(self, page):
+        """[(index as the comment tools count, annot, kind, points, note)]."""
+        out = []
+        for i, a in enumerate(self._annot_list(page)):
+            kind = self.doc.xref_get_key(a.xref, "ETRATIkind")[1].lstrip("/")
+            if kind in measure.KINDS:
+                k, note = self.doc.xref_get_key(a.xref, "ETRATInote")
+                out.append((i, a, kind, [tuple(p) for p in a.vertices or ()],
+                            note if k == "string" else ""))
+        return out
+
+    def _measure_kind(self, xref):
+        kind = self.doc.xref_get_key(xref, "ETRATIkind")[1].lstrip("/")
+        return kind if kind in measure.KINDS else ""
+
+    def scales(self):
+        """Every page's scale (or None), for the live value while measuring."""
+        return [self.scale(p) for p in range(self.doc.page_count)]
+
+    def measures(self):
+        """Every measurement of the file, counted at its page's scale."""
+        out = []
+        for pno in range(self.doc.page_count):
+            page = self.doc.load_page(pno)
+            s = self.scale(pno)
+            for i, _a, kind, pts, note in self._measure_annots(page):
+                if len(pts) < 2:
+                    continue
+                value, around = measure.values(kind, pts, s)
+                out.append({"page": pno, "index": i, "kind": kind, "value": value,
+                            "perimeter": around, "note": note, "paper": s is None,
+                            "unit": (s or measure.NO_SCALE)["unit"],
+                            "text": measure.label(kind, pts, s, note)})
+        return out
+
+    def _op_measure(self, pno, kind, points, note):
+        if kind not in measure.KINDS or not 2 <= len(points) <= 500 or (
+                kind == "area" and len(points) < 3):
+            raise EngineError("bad_op")
+        page = self.doc.load_page(pno)
+        m = page.derotation_matrix
+        pts = [Point(p) * m for p in points]
+        if measure.length([tuple(p) for p in pts]) < 1:
+            raise EngineError("bad_op")
+        color = self.MEASURE_COLORS[kind]
+        if kind == "distance":
+            a = page.add_line_annot(pts[0], pts[-1])
+        elif kind == "path":
+            a = page.add_polyline_annot(pts)
+        else:
+            a = page.add_polygon_annot(pts)
+        a.set_colors(stroke=color, fill=color if kind == "area" else None)
+        a.set_border(width=1.5)
+        a.set_info(subject="ETRATI measure")
+        a.update()
+        x = a.xref
+        a = page = None
+        self.doc.xref_set_key(x, "ETRATIkind", "/" + kind)
+        self.doc.xref_set_key(x, "ETRATInote", pymupdf.get_pdf_str(str(note)[:120]))
+        self.doc.xref_set_key(x, "IT", self.MEASURE_IT[kind])
+        self._draw_measure(pno, x)
+        return self._same(pno)
+
+    def _op_measure_note(self, pno, index, note):
+        page = self.doc.load_page(pno)
+        hit = [a for i, a, *_r in self._measure_annots(page) if i == index]
+        if not hit:
+            raise EngineError("stale")
+        x = hit[0].xref
+        hit = page = None
+        self.doc.xref_set_key(x, "ETRATInote", pymupdf.get_pdf_str(str(note)[:120]))
+        self._draw_measure(pno, x)
+        return self._same(pno)
+
+    def _draw_measure(self, pno, xref):
+        """Contents, /Measure and the look of one measurement, at its page's scale now."""
+        page = self.doc.load_page(pno)
+        hit = [(a, kind, pts, note) for _i, a, kind, pts, note in self._measure_annots(page)
+               if a.xref == xref]
+        if not hit or len(hit[0][2]) < 2:
+            raise EngineError("stale")
+        _a, kind, pts, note = hit[0]
+        s = self.scale(pno)
+        text = measure.label(kind, pts, s, note)
+        to_pdf = ~page.transformation_matrix  # MuPDF's space (y down) -> the PDF's
+        P = [Point(p) * to_pdf for p in pts]
+        r, g, b = self.MEASURE_COLORS[kind]
+        path = " ".join(f"{p.x:.3f} {p.y:.3f} {'m' if i == 0 else 'l'}" for i, p in enumerate(P))
+        ops = []
+        if kind == "area":
+            ops += ["q /G0 gs", f"{r:g} {g:g} {b:g} rg", path, "h f Q"]
+        ops += [f"{r:g} {g:g} {b:g} RG 1.5 w 1 J 1 j", path + (" h S" if kind == "area" else " S")]
+        if kind == "distance":  # short bars across both ends
+            dx, dy = P[1].x - P[0].x, P[1].y - P[0].y
+            n = math.hypot(dx, dy) or 1
+            nx, ny = -dy / n * 5, dx / n * 5
+            for p in (P[0], P[1]):
+                ops.append(f"{p.x + nx:.3f} {p.y + ny:.3f} m {p.x - nx:.3f} {p.y - ny:.3f} l S")
+        size, pad = 9.0, 2.5
+        data = _subset(_font_file(text), text)
+        font = pymupdf.Font(fontbuffer=data)
+        w = font.text_length(text, fontsize=size)
+        x0, y0, x1, y1 = -w / 2 - pad, -size * .3 - pad, w / 2 + pad, size * .85 + pad
+        (lx, ly), piece = measure.label_place(kind, pts)
+        shown = Point(lx, ly) * page.rotation_matrix  # as the page is shown, y down
+        if piece:  # beside the line: on the side that is up (or left), clear of it
+            a0, a1 = (Point(q) * page.rotation_matrix for q in piece)
+            n = math.hypot(a1.x - a0.x, a1.y - a0.y) or 1
+            nx, ny = -(a1.y - a0.y) / n, (a1.x - a0.x) / n
+            if ny > 1e-9 or (abs(ny) <= 1e-9 and nx > 0):
+                nx, ny = -nx, -ny
+            off = 3 + abs(nx) * (x1 - x0) / 2 + abs(ny) * (y1 - y0) / 2
+            shown = Point(shown.x + nx * off, shown.y + ny * off)
+        L = shown * page.derotation_matrix * to_pdf
+        ang = math.radians(page.rotation)  # the label reads upright as the page is shown
+        c, sn = math.cos(ang), math.sin(ang)
+        glyphs = "".join(f"{font.has_glyph(ord(ch)):04x}" for ch in text)
+        ops += [f"q 1 0 0 1 {L.x:.3f} {L.y:.3f} cm {c:.6f} {sn:.6f} {-sn:.6f} {c:.6f} 0 0 cm",
+                f"1 1 1 rg {r:g} {g:g} {b:g} RG 0.8 w {x0:.3f} {y0:.3f} {x1 - x0:.3f} {y1 - y0:.3f} re B",
+                f"{r * .75:g} {g * .75:g} {b * .75:g} rg BT /F {size:g} Tf {-w / 2:.3f} {-size * .3:.3f} Td "
+                f"<{glyphs}> Tj ET Q"]
+        corners = [Point(L.x + u * c - v * sn, L.y + u * sn + v * c)
+                   for u, v in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+        allp = P + corners
+        bx0, by0 = min(p.x for p in allp) - 6, min(p.y for p in allp) - 6
+        bx1, by1 = max(p.x for p in allp) + 6, max(p.y for p in allp) + 6
+        fx = page.insert_font(fontname=f"FM{self.doc.xref_length()}", fontbuffer=data)
+        page = _a = None
+        box = f"{bx0:.3f} {by0:.3f} {bx1:.3f} {by1:.3f}"
+        ap = self.doc.get_new_xref()
+        self.doc.update_object(ap, f"<</Type/XObject/Subtype/Form/BBox[{box}]/Matrix[1 0 0 1 0 0]"
+                                   f"/Resources<</Font<</F {fx} 0 R>>/ExtGState<</G0<</ca 0.16>>>>>>>>")
+        self.doc.update_stream(ap, "\n".join(ops).encode("latin-1"))
+        self.doc.xref_set_key(xref, "AP", f"<</N {ap} 0 R>>")
+        self.doc.xref_set_key(xref, "Rect", f"[{box}]")
+        self.doc.xref_set_key(xref, "Contents", pymupdf.get_pdf_str(text))
+        self.doc.xref_set_key(xref, "Measure", measure.measure_dict(s))
 
     # -- dates (design canvas "ETRATI: სურათი და თარიღი") --------------------
     # A date is real text on the page, drawn through a form of its own ("q /Name Do Q") whose

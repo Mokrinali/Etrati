@@ -24,8 +24,14 @@ TYPE_NAMES = {"Highlight": "მარკერი", "Underline": "ხაზგ�
               "Stamp": "შტამპი", "Polygon": "მრავალკუთხედი"}
 
 
+MEASURE_NAMES = {"distance": "სიგრძე", "path": "ტეხილი", "area": "ფართობი"}
+
+
 def kind_name(a):
-    """What a comment is called; a polygon marked as a cloud is a revision cloud."""
+    """What a comment is called; a polygon marked as a cloud is a revision cloud, a
+    measurement says what it measures."""
+    if a.get("measure"):
+        return MEASURE_NAMES[a["measure"]]
     return "ღრუბელი" if a.get("cloud") else TYPE_NAMES.get(a["type"], a["type"])
 
 
@@ -122,6 +128,8 @@ class ToolsMixin:
             self.organize(False)
         for v in self.views:  # the pen is one for every pane
             v.set_tool(name)
+        if name in self.MEASURE_KINDS:
+            self._measuring_started()
         if name == "object":
             self.status.emit("დააწკაპუნეთ სურათზე, თარიღზე ან ტექსტზე: გადათრევა — გადატანა, "
                              "კუთხე — ზომა (Shift — თავისუფლად), Delete — წაშლა, მარჯვენა ღილაკი — "
@@ -171,6 +179,15 @@ class ToolsMixin:
             return
         if tool == "date":
             self._add_date(pno, data["point"])
+            return
+        if tool == "m_calibrate":
+            from . import measure
+            back, self._calib_back = getattr(self, "_calib_back", "select"), None
+            self.set_tool(back or "select")
+            self.set_scale(drawn=measure.length(data["points"]), page=pno)
+            return
+        if tool in self.MEASURE_KINDS:  # the tool stays: the next one can be drawn at once
+            self.edit(("measure", pno, self.MEASURE_KINDS[tool], data["points"], ""))
             return
         if self._moving and tool == "note":
             self._place_comment(pno, data)
@@ -361,8 +378,63 @@ class ToolsMixin:
         if not self.edit(("date", pno, (x, y), dlg.text(), dlg.style(), dlg.pages(quiet=True))):
             self._pick_object = None
 
+    # -- measuring to scale (design canvas "ETRATI: მასშტაბით გაზომვა") --------
+    MEASURE_KINDS = {"m_distance": "distance", "m_path": "path", "m_area": "area"}
+
+    def _load_scales(self):
+        scales = self._quiet("scales") or []
+        for v in self.views:
+            v.measure_scales = dict(enumerate(scales))
+        self.changed.emit()
+
+    def page_scale(self, pno=None):
+        """The scale of a page as the views know it (None: none set, or not read yet)."""
+        pno = self.view.page if pno is None else pno
+        return self.view.measure_scales.get(pno)
+
+    def _measuring_started(self):
+        self._load_scales()
+        if self.page_scale() is None:
+            self.notify("warning", "მასშტაბი არ არის დაყენებული — ზომები ქაღალდის მმ-შია.",
+                        "დაყენება…", self.set_scale)
+        self.status.emit("სიგრძე: დააწკაპუნეთ დასაწყისზე და ბოლოზე · ტეხილი/ფართობი: დასრულება "
+                         "ორმაგი დაწკაპუნებით ან Enter · Backspace — ბოლო წერტილის წაშლა · "
+                         "Shift — ჰორიზ./ვერტ./45° · Esc — გაუქმება")
+
+    def set_scale(self, drawn=None, page=None):
+        """The scale dialog; "draw the known length" closes it, the line is drawn, it comes back."""
+        from .measure_ui import DRAW, ScaleDialog
+        pno = self.view.page if page is None else page
+        current = self._quiet("scale", pno)
+        dlg = ScaleDialog(pno, len(self.sizes), current, drawn, parent=self)
+        r = dlg.exec()
+        if r == DRAW:
+            self._calib_back = self.view.tool if self.view.tool in self.MEASURE_KINDS else "select"
+            self.set_tool("m_calibrate")
+            self.status.emit("დააწკაპუნეთ ცნობილი ზომის დასაწყისზე და ბოლოზე. გაუქმება: Esc")
+            return
+        if r:
+            factor, unit, digits, label, pages = dlg.result_scale()
+            if self.edit(("scale", pages, factor, unit, digits, label)):
+                self._scales_pending = True
+
+    def show_measures(self):
+        from .measure_ui import MeasureList
+        MeasureList(self._quiet("measures") or [], go=lambda p: self.view.go_to(p),
+                    parent=self).exec()
+
+    def note_measure(self, pno, a):
+        from PySide6.QtWidgets import QInputDialog
+        old = a["text"].split(": ", 1)[0] if ": " in a["text"] else ""
+        text, ok = QInputDialog.getText(self, "შენიშვნა", "შენიშვნა (მაგ. „ოთახი 1“):", text=old)
+        if ok:
+            self.edit(("measure_note", pno, a["index"], text.strip()))
+
     def _after_objects(self, kind):
         """After an edit: the picture worked on is chosen again (its bar stays at hand)."""
+        if getattr(self, "_scales_pending", False) or self.view.tool in self.MEASURE_KINDS:
+            self._scales_pending = False
+            self._load_scales()
         want, self._pick_object = self._pick_object, None
         ask, self._ask_copy = self._ask_copy, False
         if not want or kind != "edit" or self.view.tool != "object":
@@ -459,6 +531,12 @@ class ToolsMixin:
             x0, y0, x1, y1 = a["rect"]
             if x0 - 2 <= q.x() <= x1 + 2 and y0 - 2 <= q.y() <= y1 + 2:
                 name = kind_name(a)
+                if a.get("measure"):
+                    menu.addAction(f"{name}: შენიშვნა…", lambda a=a: self.note_measure(pno, a))
+                    menu.addAction(f"{name}: წაშლა", lambda a=a: self.edit(
+                        ("annot_del", pno, a["index"], a["type"])))
+                    menu.addSeparator()
+                    break
                 menu.addAction(f"{name}: ტექსტის შეცვლა…", lambda a=a: self.edit_comment(pno, a))
                 menu.addAction(f"{name}: წაშლა", lambda a=a: self.edit(
                     ("annot_del", pno, a["index"], a["type"])))

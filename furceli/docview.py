@@ -531,7 +531,8 @@ class DocView(ToolsMixin, QWidget):
         return self.loaded and not self._busy and not self.broken and self.info["can_assemble"]
 
     NEEDS = {"annot": "can_annotate", "annot_del": "can_annotate", "annot_text": "can_annotate",
-             "annot_move": "can_annotate", "fill": "can_fill", "protect": None}
+             "annot_move": "can_annotate", "fill": "can_fill", "protect": None,
+             "measure": "can_annotate", "measure_note": "can_annotate"}
 
     def allowed(self, op_name):
         pages = ("rotate", "order", "duplicate", "insert", "blank", "crop")
