@@ -19,7 +19,7 @@ from .batch import BatchDialog
 from .client import EngineClient, TaskError, finish_all, run_task
 from .convert_names import EXCEL, OOXML, SLIDES, SUPPORTED, WEB, WORD
 from .dialogs import MergeDialog, error_text
-from .helper import convert_first
+from .helper import convert_first, tidy
 from .scan_dialog import ScanDialog
 from .banner import Banner
 from .swatches import ColorSwatches
@@ -384,7 +384,10 @@ class MainWindow(QMainWindow):
         try:
             # Office and HTML: made harmless by the engine, converted by the helper
             ready = convert_first(client, paths, bool(old), "PDF იქმნება…", self)
-            run_task(client, "make_pdf", (ready, tmp, bool(old)), "PDF იქმნება…", self)
+            try:
+                run_task(client, "make_pdf", (ready, tmp, bool(old)), "PDF იქმნება…", self)
+            finally:
+                tidy([r for r, p in zip(ready, paths) if r != p])
             files.put_in_place(tmp, out)
         except TaskError as e:
             code, _, n = str(e).partition("#")
@@ -657,6 +660,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(1)
 
     def _ready(self, doc):
+        self._tell_walls()
         self.settings.setValue("dir", os.path.dirname(doc.path))
         times = self._opened_times()
         times[os.path.normcase(doc.path)] = int(time.time())
@@ -665,6 +669,19 @@ class MainWindow(QMainWindow):
         self._set_recent([doc.path] + [p for p in self._recent()
                                        if os.path.normcase(p) != os.path.normcase(doc.path)])
         self._sync()
+
+    def _tell_walls(self):
+        """Once: the engine could not be started with few rights (furceli/sandbox.py)."""
+        if os.name != "nt" or getattr(self, "_walls_told", False):
+            return
+        from . import sandbox
+        why = sandbox.failed or sandbox.weakened
+        if why:
+            self._walls_told = True
+            self.statusBar().showMessage(
+                "ყურადღება: PDF-ის დამუშავება ჩვეულებრივზე ნაკლები დაცვით მუშაობს ("
+                + ("სრული უფლებებით" if sandbox.failed else "Job Object-ის გარეშე")
+                + f"). მიზეზი: {why}", 20000)
 
     def _open_failed(self, doc, msg):
         if msg:
@@ -991,4 +1008,5 @@ class MainWindow(QMainWindow):
             self.close_tab(0, ask=False)
         self.settings.sync()
         finish_all()  # no engine, Office or Edge may outlive the program
+        files.drop_engine_root()  # copies the engines made of documents go too
         e.accept()

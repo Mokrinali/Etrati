@@ -475,7 +475,8 @@ def test_word_at_the_end_of_a_line_keeps_the_page_as_text(tmp_path):
 def test_exports_leave_nothing_in_the_temporary_folder(tmp_path, monkeypatch, kind):
     from furceli import files
     made, real = [], files.new_session
-    monkeypatch.setattr(files, "new_session", lambda: made.append(real()) or made[-1])
+    monkeypatch.setattr(files, "new_session",
+                        lambda *a, **k: made.append(real(*a, **k)) or made[-1])
     d = pymupdf.open()
     p = d.new_page()
     for r in range(3):

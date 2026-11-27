@@ -161,13 +161,30 @@ def engine_root() -> str:
     """
     global _root
     if _root is None or not os.path.isdir(_root):
-        _root = new_session()
+        # Under %LOCALAPPDATA%Low: an engine of low integrity may write only there.
+        _root = new_session(_engine_base())
     return _root
 
 
+def engine_root_is_low() -> bool:
+    """Is the engine folder where an engine of low integrity may write?"""
+    base = _engine_base()
+    root = os.path.normcase(os.path.abspath(engine_root()))
+    return bool(base) and os.path.dirname(root) == os.path.normcase(os.path.abspath(base))
+
+
 def outbox_dir() -> str:
-    """A folder of its own inside the engine's folder, for working files of one task."""
-    return tempfile.mkdtemp(dir=engine_root())
+    """A folder of its own inside the engine's folder, for working files of one task; named
+    after this process (an engine's goes when that engine dies)."""
+    return new_session(engine_root())
+
+
+def drop_engine_root():
+    """When the window closes: what its engines wrote is not needed any more."""
+    global _root
+    root, _root = _root, None
+    if root:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def outbox(target: str) -> str:
@@ -180,21 +197,27 @@ def outbox(target: str) -> str:
 MARK = "furceli.session"
 
 
-def new_session() -> str:
+def new_session(base: str | None = None) -> str:
     """A private temporary folder that names its owner, so leftovers can be found."""
+    path = tempfile.mkdtemp(prefix="furceli_", dir=base)
+    claim(path, os.getpid())
+    return path
+
+
+def claim(path: str, pid: int):
+    """Name the process a folder belongs to: it goes once that process is gone."""
     import psutil
-    path = tempfile.mkdtemp(prefix="furceli_")
     mark = os.path.join(path, MARK)
     with open(mark + ".new", "w") as f:
-        f.write(f"{os.getpid()} {psutil.Process().create_time()}")
+        f.write(f"{pid} {psutil.Process(pid).create_time()}")
     os.replace(mark + ".new", mark)  # a half-written mark would look like a dead owner's
-    return path
 
 
 @contextlib.contextmanager
 def work_dir():
     # Inside the engine's folder when there is one: the helper only takes files from there.
-    path = tempfile.mkdtemp(dir=_root) if _root and os.path.isdir(_root) else new_session()
+    # Named after this process, so what a killed engine left is found and removed.
+    path = new_session(_root if _root and os.path.isdir(_root) else None)
     try:
         yield path
     finally:
@@ -213,14 +236,27 @@ def _owner_alive(mark: str) -> bool:
         return True  # cannot tell: leave it alone
 
 
+def _engine_base() -> str | None:
+    if os.name != "nt":
+        return None
+    from . import sandbox
+    try:
+        return sandbox.engine_base()
+    except OSError:
+        return None
+
+
 def sweep_sessions() -> int:
     """Remove folders left behind by a crashed or killed program. Only marked ones."""
-    root, n = tempfile.gettempdir(), 0
-    for name in os.listdir(root):
-        mark = os.path.join(root, name, MARK)
-        if name.startswith("furceli_") and os.path.isfile(mark) and not _owner_alive(mark):
-            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            n += not os.path.exists(mark)
+    n = 0
+    mine = _root if _root and os.path.isdir(_root) else None  # what our dead engines left there
+    for root in {tempfile.gettempdir(), _engine_base(), mine} - {None}:
+        with contextlib.suppress(OSError):
+            for name in os.listdir(root):
+                mark = os.path.join(root, name, MARK)
+                if name.startswith("furceli_") and os.path.isfile(mark) and not _owner_alive(mark):
+                    shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+                    n += not os.path.exists(mark)
     return n
 
 

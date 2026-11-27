@@ -122,6 +122,12 @@ def main():
         return False, "the engine wrote outside its folder"
     check("engine writes only into its folder", walled)
 
+    def few_rights():
+        from furceli import sandbox
+        level = sandbox.integrity(client._proc.pid)
+        return level == 0x1000 and not sandbox.failed, f"integrity={level:#x} failed={sandbox.failed!r}"
+    check("engine runs at low integrity", few_rights)
+
     def save():
         run_task(client, "apply", (("rotate", [0], 90),))
         run_task(client, "save", (saved,))

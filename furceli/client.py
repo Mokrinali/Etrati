@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import os
 import multiprocessing as mp
 import threading
 import time
@@ -135,15 +136,35 @@ class EngineClient(QObject):
                     proc.kill()
             self._thread.join(2)
             self._stop_helpers()
+            files.sweep_sessions()  # its TEMP and working folders
         finally:
             if after is not None:
                 after()
 
     # -- worker thread -----------------------------------------------------
+    def _process(self, child):
+        """The engine runs with few rights (furceli/sandbox.py); the helper with normal ones."""
+        args = (child, self._root)
+        if self._serve is worker_serve and os.name == "nt":
+            from . import sandbox
+            try:
+                if not files.engine_root_is_low():  # it could not even write its own folder
+                    raise OSError("the engine folder is not under LocalLow")
+                proc = sandbox.LowProcess(target=self._serve, args=args, daemon=True)
+                proc._tmp = files.new_session(self._root)  # its own TEMP
+                proc.start()
+                files.claim(proc._tmp, proc.pid)  # goes with this engine, killed or not
+                sandbox.failed = ""
+                return proc
+            except OSError as e:  # a Windows that refuses: the engine still has to work
+                sandbox.failed = f"{type(e).__name__}: {e}"
+        proc = self._ctx.Process(target=self._serve, args=args, daemon=True)
+        proc.start()
+        return proc
+
     def _start(self):
         parent, child = self._ctx.Pipe()
-        proc = self._ctx.Process(target=self._serve, args=(child, self._root), daemon=True)
-        proc.start()
+        proc = self._process(child)
         child.close()
         self._conn = parent
         with self._cv:  # visible to other threads only once it really runs

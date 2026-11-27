@@ -193,3 +193,179 @@ def test_helper_errors_keep_the_number_of_the_file(app, tmp_path):  # noqa: F811
             helper.convert_first(c, [str(tmp_path / "x.png"), str(bad)], False, "", None)
     finally:
         c.shutdown()
+
+
+# -- steps C and D: the engine has few rights ------------------------------------------------
+def test_engine_runs_at_low_integrity(app, tmp_path):  # noqa: F811
+    from furceli import sandbox
+    c = client.EngineClient()
+    try:
+        client.run_task(c, "open", (build(tmp_path / "a.pdf"), ""), "", None)
+        assert sandbox.failed == "" and sandbox.integrity(c._proc.pid) == 0x1000
+    finally:
+        c.shutdown()
+
+
+def test_engine_cannot_write_into_the_users_folders(app, tmp_path):  # noqa: F811
+    c = client.EngineClient()
+    home = os.path.join(os.path.expanduser("~"), f"etrati-probe-{os.getpid()}.txt")
+    desk = os.path.join(os.environ["USERPROFILE"], "Desktop", f"etrati-probe-{os.getpid()}.txt")
+    try:
+        mine = files.outbox(str(tmp_path / "ok.txt"))
+        assert client.run_task(c, "_probe", (mine,), "", None) == "written"
+        for target in (str(tmp_path / "no.txt"), home, desk):
+            assert client.run_task(c, "_probe", (target,), "", None) == "PermissionError", target
+            assert not os.path.exists(target)
+    finally:
+        c.shutdown()
+        for p in (home, desk):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_engine_dies_with_its_window(tmp_path):
+    """However the window ends, its engines go with it: the job closes with the process."""
+    import subprocess
+    import sys
+    import time
+    import psutil
+    script = tmp_path / "window.py"
+    script.write_text("\n".join([
+        "import sys, time",
+        "if __name__ == '__main__':  # spawn runs this file again in the engine",
+        "    from PySide6.QtWidgets import QApplication",
+        "    app = QApplication([])",
+        "    from furceli import client",
+        "    c = client.EngineClient()",
+        "    client.run_task(c, 'inspect', (sys.argv[1], ''), '', None)",
+        "    c.submit(('busy',), 0, '_sleep', 30)  # busy: it does not notice the pipe close",
+        "    time.sleep(1)",
+        "    print(c._proc.pid, flush=True)",
+        "    time.sleep(60)", ""]), encoding="utf-8")
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+               PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    p = subprocess.Popen([sys.executable, str(script), build(tmp_path / "a.pdf")],
+                         stdout=subprocess.PIPE, env=env, text=True)
+    try:
+        pid = int(p.stdout.readline())
+        engine = psutil.Process(pid)
+        assert engine.is_running()
+        p.kill()  # as a crash would: nobody shuts anything down
+        end = time.time() + 10
+        while time.time() < end and engine.is_running():
+            time.sleep(.1)
+        assert not engine.is_running()
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+# -- nothing of a document stays in the engine folder ---------------------------------------
+def leftovers(root):
+    from furceli.files import MARK
+    out = []
+    for dirpath, dirs, names in os.walk(root):
+        out += [os.path.join(dirpath, n) for n in names if n != MARK]
+    return out
+
+
+def test_a_killed_engine_leaves_nothing(app, tmp_path):  # noqa: F811
+    c = client.EngineClient()
+    try:
+        client.run_task(c, "open", (build(tmp_path / "a.pdf"), ""), "", None)
+        folder = client.run_task(c, "_litter", (), "", None)
+        assert os.path.exists(os.path.join(folder, "copy.pdf"))
+        crashed = []
+        c.crashed.connect(lambda: crashed.append(1))
+        c.submit(("boom",), 0, "_crash")
+        wait(lambda: crashed)
+        wait(lambda: not os.path.exists(folder), 10)
+    finally:
+        c.shutdown()
+
+
+def test_converting_office_leaves_nothing_behind(app, tmp_path):  # noqa: F811
+    from furceli import helper
+    word, page = office_and_web(tmp_path)
+    before = set(leftovers(files.engine_root()))
+    c = client.EngineClient()
+    try:
+        try:
+            ready = helper.convert_first(c, [word, page], False, "", None)
+        except client.TaskError as e:
+            if "no_office" in str(e) or "no_edge" in str(e):
+                pytest.skip(str(e))
+            raise
+        out = files.outbox(str(tmp_path / "all.pdf"))
+        client.run_task(c, "make_pdf", (ready, out), "", None)
+        helper.tidy(ready + [out])
+        with pytest.raises(client.TaskError):  # a bad second file: the first one's PDF goes too
+            helper.convert_first(c, [word, str(tmp_path / "missing.docx")], False, "", None)
+    finally:
+        c.shutdown()
+    left = set(leftovers(files.engine_root())) - before
+    assert not left, left
+
+
+def test_closing_the_window_removes_the_engine_folder(win, tmp_path):  # noqa: F811
+    open_doc(win, build(tmp_path / "a.pdf"))
+    root = files.engine_root()
+    win.close()
+    assert not os.path.exists(root)
+
+
+# -- when Windows gives less ------------------------------------------------------------------
+def test_without_a_job_the_engine_still_has_few_rights(app, tmp_path, monkeypatch):  # noqa: F811
+    from furceli import sandbox
+
+    def no_job():
+        raise OSError("refused")
+    monkeypatch.setattr(sandbox, "_job", None)
+    monkeypatch.setattr(sandbox, "_make_job", no_job)
+    monkeypatch.setattr(sandbox, "weakened", "")
+    c = client.EngineClient()
+    try:
+        client.run_task(c, "inspect", (build(tmp_path / "a.pdf"), ""), "", None)
+        assert sandbox.integrity(c._proc.pid) == 0x1000 and not sandbox.failed
+        assert "no job" in sandbox.weakened
+    finally:
+        c.shutdown()
+
+
+def test_a_window_inside_a_job_of_its_own(tmp_path):
+    """Some launchers put programs into a job with UI limits: the engine must still start."""
+    import subprocess
+    import sys
+    script = tmp_path / "boxed.py"
+    script.write_text("\n".join([
+        "import ctypes, sys",
+        "if __name__ == '__main__':",
+        "    k = ctypes.WinDLL('kernel32')",
+        "    k.CreateJobObjectW.restype = ctypes.c_void_p",
+        "    job = k.CreateJobObjectW(None, None)",
+        "    ui = ctypes.c_uint32(0xff)  # every UI limit there is",
+        "    assert k.SetInformationJobObject(ctypes.c_void_p(job), 4, ctypes.byref(ui), 4)",
+        "    assert k.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(k.GetCurrentProcess()))",
+        "    from PySide6.QtWidgets import QApplication",
+        "    app = QApplication([])",
+        "    from furceli import client, sandbox",
+        "    c = client.EngineClient()",
+        "    client.run_task(c, 'inspect', (sys.argv[1], ''), '', None)",
+        "    print(hex(sandbox.integrity(c._proc.pid)), repr(sandbox.failed), repr(sandbox.weakened))",
+        "    c.shutdown()", ""]), encoding="utf-8")
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+               PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    r = subprocess.run([sys.executable, str(script), build(tmp_path / "a.pdf")],
+                       capture_output=True, env=env, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-800:]
+    assert r.stdout.startswith("0x1000 ''"), r.stdout
+
+
+def test_the_window_tells_when_the_engine_has_more_rights(win, tmp_path, monkeypatch):  # noqa: F811
+    from furceli import sandbox
+    monkeypatch.setattr(sandbox, "failed", "OSError: refused")
+    open_doc(win, build(tmp_path / "a.pdf"))
+    sandbox.failed = "OSError: refused"  # the engine start above has reset it
+    win._walls_told = False
+    win._tell_walls()
+    assert "სრული უფლებებით" in win.statusBar().currentMessage()

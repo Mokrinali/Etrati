@@ -60,17 +60,34 @@ def convert_first(engine, paths, trusted, text, parent, allow=None):
                 continue
             if helper is None:
                 helper = EngineClient(parent, serve=serve)
-            pdf = files.outbox(os.path.basename(path) + ".pdf")
+            pdf, ready = files.outbox(os.path.basename(path) + ".pdf"), None
             try:
                 kind, ready = run_task(engine, "prepare", (path, trusted), text, parent,
                                        allow=allow)
                 run_task(helper, "convert", (kind, ready, pdf), text, parent, allow=allow)
             except TaskError as e:
+                tidy([pdf])
                 if str(e) == "cancelled":
                     raise
                 raise TaskError(f"{e}#{i}")
+            finally:
+                if ready:
+                    tidy([ready])  # the cleaned copy of the stranger's file
             out[i] = pdf
+    except BaseException:
+        tidy([o for o, p in zip(out, paths) if o != p])  # those converted before the failure
+        raise
     finally:
         if helper is not None:
             helper.shutdown()
     return out
+
+
+def tidy(paths):
+    """Remove files made in the engine's folder, with their own folders; others are left."""
+    import shutil
+    root = files.engine_root()
+    for p in paths:
+        folder = os.path.dirname(os.path.abspath(p))
+        if _inside(p, root) and os.path.dirname(folder) == os.path.abspath(root):
+            shutil.rmtree(folder, ignore_errors=True)

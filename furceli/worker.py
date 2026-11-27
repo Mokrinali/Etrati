@@ -63,6 +63,9 @@ def run(engine, op, args, root=None):
     return getattr(engine, op)(*args)
 
 
+_held: list = []  # tests only: working folders kept open on purpose
+
+
 def serve(conn, root=None):
     if root is not None:
         files._root = root          # its working folders go there too
@@ -79,6 +82,22 @@ def serve(conn, root=None):
             return
         if testing and op == "_crash":
             os._exit(3)
+        if testing and op == "_probe":  # can the engine write here? (tests of its walls)
+            try:
+                with open(args[0], "wb") as f:
+                    f.write(b"probe")
+                conn.send(("ok", "written"))
+            except OSError as e:
+                conn.send(("ok", type(e).__name__))
+            continue
+        if testing and op == "_litter":  # a working folder, as a task killed half-way leaves it
+            held = files.work_dir()  # the real one, never left: as a killed task leaves it
+            _held.append(held)
+            folder = held.__enter__()
+            with open(os.path.join(folder, "copy.pdf"), "wb") as f:
+                f.write(b"secret")
+            conn.send(("ok", folder))
+            continue
         if testing and op == "_sleep":
             time.sleep(args[0])
             conn.send(("ok", None))

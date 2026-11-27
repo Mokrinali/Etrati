@@ -449,7 +449,7 @@ def test_batch(win, tmp_path):  # noqa: F811
         box.setChecked(True)
     dlg.password.setText("x1")
     dlg.run(str(out))
-    assert sorted(os.listdir(out)) == ["ა.pdf", "ბ.pdf"]
+    assert sorted(os.listdir(out)) == ["ა.pdf", "ბ.pdf"], dlg.report
     assert [bool(e) for _, e in dlg.report] == [False, True, False]
     d = pymupdf.open(str(out / "ა.pdf"))
     assert d.needs_pass and d.authenticate("x1") and d[0].rotation == 90

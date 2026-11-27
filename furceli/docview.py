@@ -954,7 +954,9 @@ class DocView(ToolsMixin, QWidget):
             files.drop_stale_temps(target)
             tmp = files.outbox(target)
             run_task(self.client, "save", (tmp,), "ინახება…", self)
-            if os.path.exists(target) and os.path.getsize(target) > 20 * 1024 * 1024:
+            # the engine's file is copied over from its folder: big ones while the window lives
+            if max(os.path.getsize(tmp), os.path.getsize(target) if os.path.exists(target)
+                   else 0) > 20 * 1024 * 1024:
                 backup = run_thread(lambda: files.put_in_place(tmp, target), "ინახება…", self)
             else:
                 backup = files.put_in_place(tmp, target)
