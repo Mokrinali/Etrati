@@ -1,6 +1,7 @@
 """Engine isolation, step A: the engine writes only into its own folder; the window puts
 files in their place."""
 import os
+import time
 
 import pymupdf
 import pytest
@@ -369,3 +370,43 @@ def test_the_window_tells_when_the_engine_has_more_rights(win, tmp_path, monkeyp
     win._walls_told = False
     win._tell_walls()
     assert "სრული უფლებებით" in win.statusBar().currentMessage()
+
+
+# -- the window trusts nothing the engine sends (review 2026-11-27) -------------------------
+def test_a_taken_over_engine_cannot_run_code_in_the_window(app, tmp_path):  # noqa: F811
+    # An engine that a bad PDF took over sends a reply built to run a command when read.
+    c = client.EngineClient()
+    marker = tmp_path / "ran-in-the-window.txt"
+    try:
+        with pytest.raises(client.TaskError):
+            client.run_task(c, "_evil", (str(marker),), "", None)
+        assert not marker.exists()
+        # and the next engine works as before
+        assert client.run_task(c, "_probe", (files.outbox(str(tmp_path / "ok.txt")),), "", None) \
+            == "written"
+    finally:
+        c.shutdown()
+
+
+def test_an_engine_cannot_make_the_window_end_other_programs(app, tmp_path):  # noqa: F811
+    import subprocess
+    import sys
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    c = client.EngineClient()
+    try:
+        client.run_task(c, "_claim", (other.pid,), "", None)  # "I started this one"
+        c._kill()  # as when the engine is killed: what it started is ended
+        time.sleep(.5)
+        assert other.poll() is None  # a program the engine did not start lives on
+    finally:
+        c.shutdown()
+        other.kill()
+
+
+def test_a_picture_with_too_few_bytes_is_refused():
+    from furceli import view
+    for bad in ((100, 100, 300, b"x" * 10), (2, 2, 3, b"\x00" * 12), (-1, 2, 6, b""),
+                ("2", 2, 6, b"\x00" * 12), (2, 2, 6, "text"), None, (1, 2)):
+        assert view.to_image(bad).isNull(), bad  # drawn as nothing, never read past the end
+    img = view.to_image((2, 2, 6, b"\x00" * 12))
+    assert not img.isNull() and img.width() == 2

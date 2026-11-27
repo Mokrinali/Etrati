@@ -98,6 +98,19 @@ def serve(conn, root=None):
                 f.write(b"secret")
             conn.send(("ok", folder))
             continue
+        if testing and op == "_evil":  # a taken-over engine: a reply that runs code when read
+            import pickle
+
+            class Evil:
+                def __reduce__(self):
+                    return (open, (args[0], "w"))
+            conn.send_bytes(pickle.dumps(("ok", Evil())))
+            continue
+        if testing and op == "_claim":  # a taken-over engine claims another program as its own
+            import psutil
+            conn.send(("started", (args[0], psutil.Process(args[0]).create_time())))
+            conn.send(("ok", None))
+            continue
         if testing and op == "_sleep":
             time.sleep(args[0])
             conn.send(("ok", None))

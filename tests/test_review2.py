@@ -435,9 +435,14 @@ class FakePipe:
     def recv(self):
         return self.answers.pop(0)
 
+    def recv_bytes(self, maxlength=None):  # as the window reads the engine: bytes, then plain data
+        import pickle
+        return pickle.dumps(self.answers.pop(0))
+
 
 def test_n10_started_and_ended_messages(app):  # noqa: F811
     c = client.EngineClient()
+    c._own = lambda value: True  # these numbers are made up; whose they are is tested elsewhere
     c._conn = FakePipe([("started", (11, 1.0)), ("started", (12, 2.0)), ("ended", (11, 1.0)),
                         ("ok", 5)])
     assert c._ask("make_pdf", ()) == ("ok", 5) and c._helpers == [(12, 2.0)]
