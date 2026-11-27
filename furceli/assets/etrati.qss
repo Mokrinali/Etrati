@@ -115,6 +115,7 @@ QTextBrowser#ai-log { background: {surface-100}; border: 0; padding: 8px; }
 QPushButton[size="sm"] { min-height: 22px; padding: 0 6px; }
 /* Dialogs (design/components/Dialog, Table, ProgressDialog, SignaturePad) */
 QDialogButtonBox { button-layout: 3; }
+QFrame#dialogFooter { background: {surface-200}; border: 0; border-top: 1px solid {line}; }
 QProgressDialog { min-width: 360px; }
 QTableWidget { gridline-color: {line}; }
 QTableWidget::item { padding: 0 8px; border-bottom: 1px solid {line}; }

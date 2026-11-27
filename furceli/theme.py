@@ -174,7 +174,63 @@ def apply_theme(app, mode: str = "light") -> str:
     load_fonts(app)
     app.setPalette(palette())
     app.setStyleSheet(style_sheet())
+    _footers(app)
     return _now
+
+
+_FOOTERS = None
+
+
+def _footers(app):
+    """Every dialog's row of buttons on a band of its own (design/components/Dialog):
+    one watcher for all of them, message boxes included, so no dialog builds it itself."""
+    global _FOOTERS
+    if _FOOTERS is None:
+        from PySide6.QtCore import QEvent, QObject, QTimer
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFrame
+
+        class Footers(QObject):
+            WATCH = (QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.LayoutRequest)
+
+            def eventFilter(self, obj, event):
+                if event.type() in self.WATCH and isinstance(obj, QDialog):
+                    QTimer.singleShot(0, lambda d=obj: self.place(d))
+                return False
+
+            @staticmethod
+            def place(dlg):
+                try:
+                    boxes = [b for b in dlg.findChildren(QDialogButtonBox)
+                             if b.isVisible() and b.window() is dlg]
+                except RuntimeError:  # closed and gone meanwhile
+                    return
+                band = dlg.findChild(QFrame, "dialogFooter")
+                if not boxes:
+                    if band is not None:
+                        band.hide()
+                    return
+                box = max(boxes, key=lambda b: b.mapTo(dlg, b.rect().topLeft()).y())
+                if not box.property("footer"):  # room on the band above and below the buttons
+                    box.setProperty("footer", True)
+                    m = box.contentsMargins()
+                    box.setContentsMargins(m.left(), m.top() + 10, m.right(), m.bottom() + 2)
+                    return  # the layout moves it; the next event places the band
+                top = box.mapTo(dlg, box.rect().topLeft()).y()
+                above = [w.mapTo(dlg, w.rect().bottomLeft()).y()
+                         for w in dlg.findChildren(QWidget_)
+                         if w.parent() is box.parent() and w is not box and w is not band
+                         and w.isVisible() and w.mapTo(dlg, w.rect().bottomLeft()).y() < top]
+                start = max(max(above, default=0) + 4, top)
+                if band is None:
+                    band = QFrame(dlg)
+                    band.setObjectName("dialogFooter")
+                band.setGeometry(0, start, dlg.width(), dlg.height() - start)
+                band.lower()  # behind everything: only a background
+                band.show()
+
+        from PySide6.QtWidgets import QWidget as QWidget_
+        _FOOTERS = Footers(app)
+        app.installEventFilter(_FOOTERS)
 
 
 def icon(name: str) -> "QIcon":
@@ -215,4 +271,8 @@ def form_layout(parent=None):
 def variant(button, kind: str):
     """primary, ghost or danger: how a push button looks (design/components/Button)."""
     button.setProperty("variant", kind)
+    # a button already styled (message boxes style theirs as they are added) must be
+    # styled again, or it keeps the plain look
+    button.style().unpolish(button)
+    button.style().polish(button)
     return button
