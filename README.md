@@ -1,4 +1,4 @@
-# ETRATI
+# Etrati
 
 <img src="furceli/assets/furceli.png" alt="ETRATI" width="96">
 

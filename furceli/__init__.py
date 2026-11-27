@@ -1,4 +1,4 @@
-APP_NAME = "ETRATI"
+APP_NAME = "Etrati"
 APP_ID = "ETRATI"
 # Old name kept for settings/backups folders so existing settings and recent files survive the rename.
 DATA_ID = "Furceli"

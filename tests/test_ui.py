@@ -70,7 +70,7 @@ def vp(view, pno, x, y):
 def test_open_and_paint(win, sample):
     doc = open_doc(win, sample)
     assert win.page_total.text().strip() == "/ 12"
-    assert "ნიმუში ერთი" in win.windowTitle() and "ETRATI" in win.windowTitle()
+    assert "ნიმუში ერთი" in win.windowTitle() and win.windowTitle().endswith("— Etrati")
     img = doc.view.viewport().grab().toImage()
     p = vp(doc.view, 0, 30, 30)
     assert img.pixelColor(p * img.devicePixelRatio()).lightness() > 240

@@ -1,4 +1,4 @@
-"""Is there a newer ETRATI? Asks GitHub for the latest release; only the version is sent
+"""Is there a newer Etrati? Asks GitHub for the latest release; only the version is sent
 (the request carries "ETRATI/<version>" and nothing about the person or their files).
 
 Installing it happens only after the person agrees: the window downloads the release's zip
@@ -87,7 +87,7 @@ class Cancelled(Exception):
 
 def can_install(found) -> bool:
     """Only a packed program installs by itself, only from a release with a zip, and only into
-    a folder that holds ETRATI and nothing else (the whole folder is replaced)."""
+    a folder that holds Etrati and nothing else (the whole folder is replaced)."""
     return bool(getattr(sys, "frozen", False) and found and found.get("asset")
                 and looks_installed(install_target()))
 
@@ -174,7 +174,7 @@ def unpack(zip_path, into) -> str:
     for here, _dirs, names in os.walk(root):
         if EXE in names:
             return here
-    raise UpdateError("ჩამოტვირთულ ფაილში ETRATI ვერ მოიძებნა.")
+    raise UpdateError("ჩამოტვირთულ ფაილში Etrati ვერ მოიძებნა.")
 
 
 def _result_file(target=None):
@@ -231,9 +231,9 @@ def install(new, target, pid, version, reopen=(), start=_start) -> bool:
     opened = [p for p in reopen if p]
     made = False
     try:
-        # The whole folder is replaced: only one that holds ETRATI and nothing else.
+        # The whole folder is replaced: only one that holds Etrati and nothing else.
         if not looks_installed(target):
-            raise UpdateError("ETRATI-ის საქაღალდეში სხვა ფაილებიცაა; ახალი ვერსია ჩამოტვირთეთ ხელით")
+            raise UpdateError("Etrati-ის საქაღალდეში სხვა ფაილებიცაა; ახალი ვერსია ჩამოტვირთეთ ხელით")
         for leftover in (old, fresh):  # of an earlier try
             if os.path.exists(leftover):
                 if not looks_installed(leftover):
@@ -252,7 +252,7 @@ def install(new, target, pid, version, reopen=(), start=_start) -> bool:
     except Exception as e:
         if made:
             shutil.rmtree(fresh, ignore_errors=True)  # only what this try made
-        why = ("ETRATI-ის საქაღალდეს სხვა პროგრამა იყენებს ან მასში ჩაწერის უფლება არ გაქვთ"
+        why = ("Etrati-ის საქაღალდეს სხვა პროგრამა იყენებს ან მასში ჩაწერის უფლება არ გაქვთ"
                if isinstance(e, PermissionError) else str(e))
         _write_result({"ok": False, "version": version, "error": why}, target)
         start([os.path.join(target, EXE)] + opened)
@@ -273,7 +273,7 @@ def tidy(target):
 
     The result is told once: the folder that holds it goes with the rest."""
     result = read_result(target)
-    for leftover in (".old", ".new"):  # only folders of ETRATI itself, never anything else
+    for leftover in (".old", ".new"):  # only folders of Etrati itself, never anything else
         folder = os.path.abspath(target) + leftover
         if looks_installed(folder):
             shutil.rmtree(folder, ignore_errors=True)

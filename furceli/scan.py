@@ -959,7 +959,7 @@ def join(parts, out, title=""):
                 doc.insert_pdf(d)
         if not doc.page_count:
             raise EngineError("no_pages")
-        doc.set_metadata({"title": title, "producer": "ETRATI", "creator": "ETRATI"})
+        doc.set_metadata({"title": title, "producer": "Etrati", "creator": "Etrati"})
         _write(doc, out)
         return doc.page_count
     finally:

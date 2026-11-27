@@ -4,6 +4,12 @@
 # Needs data\tessdata first (scripts\get_tessdata.ps1).
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
+import sys
+
+sys.path.insert(0, SPECPATH)  # noqa: F821 (PyInstaller's): furceli and version_info are here
+from furceli import __version__  # noqa: E402
+from version_info import info  # noqa: E402
+
 datas = [("furceli/assets", "furceli/assets"), ("data/tessdata", "data/tessdata"),
          ("design/tokens.json", "design")]
 binaries, hidden = [], collect_submodules("furceli") + collect_submodules("win32com")
@@ -28,6 +34,7 @@ exe = EXE(
     exclude_binaries=True,
     name="ETRATI",
     icon="furceli/assets/furceli.ico",
+    version=info(__version__),  # Task Manager and Properties say "Etrati"
     console=False,
     upx=False,
 )

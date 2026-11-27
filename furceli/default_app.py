@@ -33,13 +33,13 @@ def _set(path, name, value):
 def register(base: str = "Software") -> None:
     open_cmd, icon = command()
     classes = base + r"\Classes"
-    _set(classes + "\\" + PROG, "", "PDF (ETRATI)")
+    _set(classes + "\\" + PROG, "", "PDF (Etrati)")
     _set(classes + "\\" + PROG + r"\DefaultIcon", "", f'"{icon}",0')
     _set(classes + "\\" + PROG + r"\shell\open\command", "", open_cmd)
     app = classes + "\\" + PROG + r"\Application"
     caps = base + r"\ETRATI\Capabilities"
     for path in (app, caps):
-        _set(path, "ApplicationName", "ETRATI")
+        _set(path, "ApplicationName", "Etrati")
         _set(path, "ApplicationIcon", f"{icon},0")
         _set(path, "ApplicationDescription", "PDF viewer and editor")
     _set(app, "AppUserModelID", "ETRATI")

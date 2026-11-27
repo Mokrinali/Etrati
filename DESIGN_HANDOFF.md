@@ -5,7 +5,7 @@
 
 ## რა არის მზად
 
-`design/` საქაღალდეში არის ETRATI-ის design system. ის 2026-11-26-ის კოდის მიხედვით შედგა: `window.py`, `docview.py`, `view.py`, `scan_dialog.py`, `ai.py`, `forms.py`, `dialogs.py`, `batch.py`.
+`design/` საქაღალდეში არის Etrati-ის design system. ის 2026-11-26-ის კოდის მიხედვით შედგა: `window.py`, `docview.py`, `view.py`, `scan_dialog.py`, `ai.py`, `forms.py`, `dialogs.py`, `batch.py`.
 
 | ფაილი | რა არის |
 |---|---|

@@ -351,7 +351,7 @@ class ToolsMixin:
                               parent=self)
             box.setInformativeText(
                 "ნახაზის ნაწილი ფაილში რამდენიმე ადგილას იხატება, ან ნაწერის ამოჭრა მეზობელ "
-                "ნაწერსაც წაშლიდა. ETRATI ასეთს ჩუმად არ შლის."
+                "ნაწერსაც წაშლიდა. Etrati ასეთს ჩუმად არ შლის."
                 + ("\n\nდანარჩენის წაშლა შეიძლება." if rest else ""))
             cancel = box.addButton("გაუქმება", QMessageBox.ButtonRole.RejectRole)
             go = box.addButton("წაშალე დანარჩენი", QMessageBox.ButtonRole.AcceptRole) if rest else None

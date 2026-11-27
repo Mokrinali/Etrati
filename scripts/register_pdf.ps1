@@ -31,7 +31,7 @@ if ($Remove) {
         }
     }
     Update-Shell
-    'ETRATI is no longer offered for PDF files.'
+    'Etrati is no longer offered for PDF files.'
     return
 }
 
@@ -51,19 +51,19 @@ foreach ($key in "$prog\DefaultIcon", "$prog\Application", "$prog\shell\open\com
                  "$caps\Capabilities\FileAssociations", $apps, $with) {
     if (-not (Test-Path $key)) { New-Item $key -Force | Out-Null }
 }
-Set-Item $prog 'PDF (ETRATI)'
+Set-Item $prog 'PDF (Etrati)'
 Set-Item "$prog\DefaultIcon" "`"$icon`",0"
 Set-Item "$prog\shell\open\command" $open
-Set-ItemProperty "$prog\Application" ApplicationName 'ETRATI'
+Set-ItemProperty "$prog\Application" ApplicationName 'Etrati'
 Set-ItemProperty "$prog\Application" ApplicationIcon "$icon,0"
 Set-ItemProperty "$prog\Application" ApplicationDescription 'PDF viewer and editor'
 Set-ItemProperty "$prog\Application" AppUserModelID 'ETRATI'
-Set-ItemProperty "$caps\Capabilities" ApplicationName 'ETRATI'
+Set-ItemProperty "$caps\Capabilities" ApplicationName 'Etrati'
 Set-ItemProperty "$caps\Capabilities" ApplicationIcon "$icon,0"
 Set-ItemProperty "$caps\Capabilities" ApplicationDescription 'PDF viewer and editor'
 Set-ItemProperty "$caps\Capabilities\FileAssociations" '.pdf' 'ETRATI.pdf'
 Set-ItemProperty $apps 'ETRATI' 'Software\ETRATI\Capabilities'
 New-ItemProperty $with -Name 'ETRATI.pdf' -PropertyType String -Value '' -Force | Out-Null
 Update-Shell
-"ETRATI is registered for PDF files: $open"
+"Etrati is registered for PDF files: $open"
 if (-not $NoSettings) { Start-Process 'ms-settings:defaultapps?registeredAppUser=ETRATI' }

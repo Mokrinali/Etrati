@@ -1137,7 +1137,7 @@ class Features(EditEngine):
             a = page.add_polygon_annot(pts)
         a.set_colors(stroke=color, fill=color if kind == "area" else None)
         a.set_border(width=1.5)
-        a.set_info(subject="ETRATI measure")
+        a.set_info(subject="Etrati measure")
         a.update()
         x = a.xref
         a = page = None

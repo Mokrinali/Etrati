@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
         self.a_pgdn = self._act("შემდეგი გვერდი", d(lambda v: v.step(1)), "Ctrl+PgDown", 0xE70D)
         self.a_goto = self._act("გვერდზე გადასვლა", self._focus_page, "Ctrl+G")
         self.a_about = self._act("პროგრამის შესახებ", self.about, needs_doc=False)
-        self.a_default = self._act("PDF-ების ETRATI-ით გახსნა…", self.make_default, needs_doc=False)
+        self.a_default = self._act("PDF-ების Etrati-ით გახსნა…", self.make_default, needs_doc=False)
         self.a_update = self._act("განახლების შემოწმება…", lambda: self.check_updates(manual=True),
                                   needs_doc=False)
         e = self._edit_action
@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def make_default(self):
-        """Offer ETRATI for PDF files; Windows lets only the person make it the default."""
+        """Offer Etrati for PDF files; Windows lets only the person make it the default."""
         from . import default_app
         try:
             default_app.register()
@@ -989,24 +989,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "PDF ფაილები", "Windows-მა ჩაწერის უფლება არ მისცა. სცადეთ თავიდან.")
             return
         if default_app.is_default():
-            QMessageBox.information(self, "PDF ფაილები", "PDF ფაილები უკვე ETRATI-ით იხსნება.")
+            QMessageBox.information(self, "PDF ფაილები", "PDF ფაილები უკვე Etrati-ით იხსნება.")
             return
         QMessageBox.information(
             self, "PDF ფაილები",
-            "ახლა გაიხსნება Windows-ის პარამეტრები. იქ „.pdf“-ის გასწვრივ აირჩიეთ ETRATI "
+            "ახლა გაიხსნება Windows-ის პარამეტრები. იქ „.pdf“-ის გასწვრივ აირჩიეთ Etrati "
             "(ან დააჭირეთ „Set default“).\n\nWindows ამ არჩევანს მხოლოდ თქვენ გაძლევთ, "
             "პროგრამა თავად ვერ გააკეთებს.")
         default_app.open_settings()
 
     def offer_default(self):
-        """Asked once, on the first start of an installed ETRATI."""
+        """Asked once, on the first start of an installed Etrati."""
         from . import default_app
         if self.settings.value("asked_default", False, type=bool) or default_app.is_default():
             return
         self.settings.setValue("asked_default", True)
         if QMessageBox.question(
-                self, "PDF ფაილები", "გავხადო ETRATI PDF ფაილების მთავარი პროგრამა?\n\n"
-                "მოგვიანებით: ფაილი → „PDF-ების ETRATI-ით გახსნა…“"
+                self, "PDF ფაილები", "გავხადო Etrati PDF ფაილების მთავარი პროგრამა?\n\n"
+                "მოგვიანებით: ფაილი → „PDF-ების Etrati-ით გახსნა…“"
                 ) == QMessageBox.StandardButton.Yes:
             self.make_default()
 
@@ -1026,7 +1026,7 @@ class MainWindow(QMainWindow):
     def _update_result(self, result, manual):
         from . import __version__, updates
         if result and updates.newer(result["version"]):
-            text = (f"ხელმისაწვდომია ETRATI-ის ახალი ვერსია {result['version']} "
+            text = (f"ხელმისაწვდომია Etrati-ის ახალი ვერსია {result['version']} "
                     f"(თქვენი ვერსია: {__version__}).")
             if updates.can_install(result):
                 self.update_banner.show_message(
@@ -1042,9 +1042,9 @@ class MainWindow(QMainWindow):
     def _confirm_update(self, result) -> bool:
         mb = max(1, round((result.get("size") or 0) / 1e6))
         box = QMessageBox(QMessageBox.Icon.Question, "განახლება",
-                          f"ჩამოვტვირთო და დავაყენო ETRATI {result['version']}?", parent=self)
+                          f"ჩამოვტვირთო და დავაყენო Etrati {result['version']}?", parent=self)
         box.setInformativeText(
-            f"ჩამოსატვირთია დაახლოებით {mb} მბ. დასაყენებლად ETRATI დაიხურება და თავიდან "
+            f"ჩამოსატვირთია დაახლოებით {mb} მბ. დასაყენებლად Etrati დაიხურება და თავიდან "
             "გაიხსნება; შეუნახავ ცვლილებებზე ჩვეულებისამებრ გკითხავთ. ძველი ვერსია "
             "ადგილზე რჩება, თუ დაყენება ვერ მოხერხდა.")
         yes = box.addButton("განახლება", QMessageBox.ButtonRole.AcceptRole)
@@ -1060,7 +1060,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_update(result):
             return
         total = max(1, (result.get("size") or 0) // 1024)
-        bar = QProgressDialog(f"იტვირთება ETRATI {result['version']}…", "გაუქმება", 0, total, self)
+        bar = QProgressDialog(f"იტვირთება Etrati {result['version']}…", "გაუქმება", 0, total, self)
         bar.setWindowTitle("განახლება")
         bar.setWindowModality(Qt.WindowModality.WindowModal)
         bar.setMinimumDuration(0)
@@ -1080,7 +1080,7 @@ class MainWindow(QMainWindow):
             if isinstance(got, updates.Cancelled):
                 return
             if isinstance(got, Exception):
-                QMessageBox.warning(self, "განახლება", f"{got}\n\nETRATI უცვლელი დარჩა.")
+                QMessageBox.warning(self, "განახლება", f"{got}\n\nEtrati უცვლელი დარჩა.")
                 return
             self._ready_update(got, result["version"])
         loader.progress.connect(moved)
@@ -1093,7 +1093,7 @@ class MainWindow(QMainWindow):
         self._pending_update = (folder, version)
         if not self.close():
             self.update_banner.show_message(
-                "info", f"ETRATI {version} ჩამოტვირთულია და დასაყენებლად მზადაა.",
+                "info", f"Etrati {version} ჩამოტვირთულია და დასაყენებლად მზადაა.",
                 "დაყენება", self.close)
 
     def after_update(self):
@@ -1106,10 +1106,10 @@ class MainWindow(QMainWindow):
             return
         if result.get("ok"):
             self.update_banner.show_message(
-                "success", f"ETRATI განახლდა ვერსიაზე {result.get('version', __version__)}.")
+                "success", f"Etrati განახლდა ვერსიაზე {result.get('version', __version__)}.")
         else:
             self.update_banner.show_message(
-                "danger", "განახლება ვერ დაყენდა, ETRATI ძველ ვერსიაზე დარჩა. "
+                "danger", "განახლება ვერ დაყენდა, Etrati ძველ ვერსიაზე დარჩა. "
                          f"მიზეზი: {result.get('error', '')}",
                 "ჩამოტვირთვა…", lambda: updates.open_page(updates.PAGE))
 
