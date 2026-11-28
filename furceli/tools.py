@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, Q
                                QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressDialog,
                                QPushButton, QVBoxLayout, QWidget)
 
-from . import APP_NAME, files, theme
+from . import APP_NAME, files, signing, theme
 from .client import P_TEXT, TaskError, run_task
+from .engine import EngineError
 from .dialogs import PDF_FILTER, error_text, warn_unprotected
 from .forms import (ChoicesDialog, CompareDialog, CompressDialog, FieldDialog, HeaderDialog,
                     LineDialog, OcrDialog, ProtectDialog, ScrubDialog, SignDialog, SignaturePad,
@@ -1017,16 +1018,16 @@ class ToolsMixin:
             o.update(page=pno, box=box, field=field)
         tmp = files.outbox(out)
         try:
-            run_task(self.client, "sign", (self.path, tmp, self._password, dlg.pfx(),
-                                           dlg.password(), o), "ხელი ეწერება…", self)
+            # the certificate's key and password stay in this process (Fable's review, №6)
+            signing.sign_through(self.client, self.path, tmp, self._password, dlg.pfx(),
+                                 dlg.password(), o, "ხელი ეწერება…", self)
             files.put_in_place(tmp, out)
-        except (TaskError, OSError) as e:
+        except (TaskError, EngineError, OSError) as e:
             QMessageBox.warning(self, "ხელმოწერა", error_text(
-                str(e) if isinstance(e, TaskError) else "no_access"))
+                str(e) if isinstance(e, (TaskError, EngineError)) else "no_access"))
             return
         finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            files.discard(tmp)
         self.openRequested.emit(out)
 
     def verify(self):

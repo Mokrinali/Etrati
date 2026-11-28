@@ -12,8 +12,8 @@ QUERIES = {"render", "images", "objects", "paths", "erasable", "erase_check", "s
            "ocr_words", "compare", "visual_diff", "mentions", "page_texts", "pdf_box"}
 CHANGES = {"open", "replay", "apply", "save", "export", "pdfa"}
 SCAN = {"scan_count", "scan_analyse", "scan_preview", "scan_build", "scan_join"}
-NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign", "verify", "make_certificate",
-                 "prepare"}
+NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign_prepare", "sign_finish",
+                 "verify", "prepare"}
 ALLOWED = QUERIES | CHANGES | NO_DOC | {"export_as", "to_images"}
 
 
@@ -21,7 +21,7 @@ ALLOWED = QUERIES | CHANGES | NO_DOC | {"export_as", "to_images"}
 WRITES = {"save": lambda a: [a[0]], "export": lambda a: [p for _, p in a[0]],
           "merge": lambda a: [a[2]], "pdfa": lambda a: [a[0]], "make_pdf": lambda a: [a[1]],
           "export_as": lambda a: [a[1]], "to_images": lambda a: [p for _, p in a[0]],
-          "sign": lambda a: [a[1]], "make_certificate": lambda a: [a[0]],
+          "sign_prepare": lambda a: [a[1]], "sign_finish": lambda a: [a[0]],
           "scan_build": lambda a: [a[3]], "scan_join": lambda a: [a[1]]}
 
 
@@ -58,8 +58,10 @@ def run(engine, op, args, root=None):
         return convert.export_as(engine, *args)
     if op == "to_images":
         return convert.to_images(engine, *args)
-    if op in ("sign", "verify", "make_certificate"):
-        return getattr(signing, op)(*args)
+    if op in ("sign_prepare", "sign_finish", "verify"):
+        # the key and its password stay in the window (signing.sign_through)
+        return {"sign_prepare": signing.prepare, "sign_finish": signing.finish,
+                "verify": signing.verify}[op](*args)
     return getattr(engine, op)(*args)
 
 
@@ -93,6 +95,14 @@ def serve(conn, root=None):
                 with open(args[0], "wb") as f:
                     f.write(b"probe")
                 conn.send(("ok", "written"))
+            except OSError as e:
+                conn.send(("ok", type(e).__name__))
+            continue
+        if testing and op == "_peek":  # can the engine read this? (tests of the secrets)
+            try:
+                with open(args[0], "rb") as f:
+                    f.read(1)
+                conn.send(("ok", "read"))
             except OSError as e:
                 conn.send(("ok", type(e).__name__))
             continue

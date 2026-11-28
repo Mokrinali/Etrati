@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDia
                                QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from . import files, theme
-from .client import TaskError, run_task
+from . import files, signing, theme
+from .client import run_thread
 from .dialogs import error_text
 
 
@@ -632,13 +632,15 @@ class SignDialog(QDialog):
             os.path.expanduser(f"~/{files.safe_name(name)}.pfx")), "სერტიფიკატი (*.pfx)")
         if not out:
             return
-        tmp = files.outbox(out)
+        # Made here, never in an engine or its folder: an engine opens strangers' PDFs and
+        # must neither learn the password nor slip in a key of its own (Fable's review, №6).
+        tmp = files.temp_name(out)
         try:
-            run_task(self.client, "make_certificate", (tmp, pw, name.strip()), "იქმნება…", self)
+            run_thread(lambda: signing.make_certificate(tmp, pw, name.strip()), "იქმნება…", self)
             files.put_in_place(tmp, out)  # a certificate that was there is kept as a backup
-        except (TaskError, OSError) as e:
-            QMessageBox.warning(self, self.windowTitle(), "სერტიფიკატი ვერ შეიქმნა. " + error_text(
-                str(e) if isinstance(e, TaskError) else "no_access"))
+        except OSError:
+            QMessageBox.warning(self, self.windowTitle(),
+                                "სერტიფიკატი ვერ შეიქმნა. " + error_text("no_access"))
             return
         finally:
             files.discard(tmp)
