@@ -90,6 +90,7 @@ def test_flatten_restores_the_shape(page):
     assert scan.flatten(img, scan.FULL) is img
 
 
+@pytest.mark.own_process
 @pytest.mark.parametrize("q", [0, 1, 2, 3])
 def test_upright(page, q):
     x = page[0].get_pixmap(dpi=130)
@@ -98,6 +99,7 @@ def test_upright(page, q):
     assert scan.upright(scan.turn(img, q), "kat+eng") == (4 - q) % 4
 
 
+@pytest.mark.own_process
 @pytest.mark.parametrize("k", [2, 5])
 def test_upside_down_photos_are_turned(k):
     # Read upside down, these pages give about 58% plausible words: once enough to stop at.
@@ -108,6 +110,7 @@ def test_upside_down_photos_are_turned(k):
     assert scan.upright(flat, "kat+eng") == 2
 
 
+@pytest.mark.own_process
 def test_a_phone_photo_is_settled_by_a_few_lines(page, monkeypatch):
     # Real phone photos read worse (half the words plausible) but one way still wins
     # clearly: the whole page must not be read four times (that took a minute per photo).
@@ -133,6 +136,7 @@ def test_dense_finds_the_writing():
     assert scan._dense(ink, 1) == (0.0, 1.0, 0.0, 1.0)
 
 
+@pytest.mark.own_process
 def test_upright_leaves_pictures_alone():
     assert scan.upright(np.full((600, 800, 3), 240, np.uint8), "kat+eng") == 0
     rnd = np.random.default_rng(2)
@@ -219,6 +223,7 @@ def test_black_and_white_is_really_that(page):
 
 
 # -- the whole way -------------------------------------------------------------
+@pytest.mark.own_process
 @pytest.mark.parametrize("kind", ["usual", "shadow", "turned", "scan"])
 def test_photo_becomes_a_searchable_page(tmp_path, page, kind):
     img, true, q = photo(page, kind, 5)

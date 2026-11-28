@@ -82,6 +82,12 @@ def serve(conn, root=None):
             return
         if testing and op == "_crash":
             os._exit(3)
+        if testing and op == "_crash_once":  # dies the first time, as OCR now and then does
+            if not os.path.exists(args[0]):
+                open(args[0], "wb").close()
+                os._exit(3)
+            conn.send(("ok", "again"))
+            continue
         if testing and op == "_probe":  # can the engine write here? (tests of its walls)
             try:
                 with open(args[0], "wb") as f:

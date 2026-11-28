@@ -10,6 +10,34 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SYLFAEN = "C:/Windows/Fonts/sylfaen.ttf"
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "own_process: runs in a pytest of its own, because OCR "
+                            "in MuPDF/Tesseract now and then crashes the process (HANDOFF, "
+                            "point 2); a crash is then a failure, not the end of the run")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    if pyfuncitem.get_closest_marker("own_process") is None or os.environ.get("FURCELI_OWN_PROCESS"):
+        return None
+    import shutil
+    import subprocess
+    import tempfile
+    base = tempfile.mkdtemp(prefix="furceli-own-")  # never the run's own: pytest would sweep it
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--basetemp",
+             os.path.join(base, "t"), pyfuncitem.nodeid],
+            cwd=str(pyfuncitem.config.rootpath), env=dict(os.environ, FURCELI_OWN_PROCESS="1"),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    if r.returncode != 0:
+        pytest.fail(f"in a process of its own, exit code {r.returncode}:\n"
+                    f"{r.stdout[-4000:]}\n{r.stderr[-2000:]}", pytrace=False)
+    return True
+
+
 def make_sample(path, pages=12):
     doc = pymupdf.open()
     for i in range(pages):

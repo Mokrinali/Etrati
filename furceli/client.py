@@ -27,6 +27,9 @@ LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
         "scan_count": 300.0, "scan_preview": 180.0, "page_texts": 300.0, "mentions": 300.0}
 MAX_RESTARTS = 5             # in a row, without a single success between them
 ALWAYS_TRY = {"save", "export", "replay", "open", "pdfa"}  # the user's work depends on these
+# OCR in MuPDF/Tesseract now and then crashes the engine (HANDOFF, point 2). These operations
+# only read and make their own output, so after a crash they are tried once more.
+RETRY_ONCE = {"scan_analyse", "scan_build", "ocr_words"}
 
 
 MAX_REPLY = 1 << 29  # a reply larger than this is no answer of an engine that works
@@ -274,6 +277,24 @@ class EngineClient(QObject):
                     raise FileChanged
         return self._ask(op, args)
 
+    def _call_retrying(self, op, args):
+        """_call, once more in a new engine if the engine died of itself (not hung, not
+        cancelled) during an operation of RETRY_ONCE."""
+        try:
+            return self._call(op, args)
+        except FileChanged:
+            raise
+        except Exception:
+            if op not in RETRY_ONCE or self._proc is None or self._aborting or self._stop:
+                raise
+            self._proc.join(1)  # the pipe breaks a moment before the process is gone
+            if self._proc.exitcode is None:  # it hangs: one wait is enough
+                raise
+        self._kill()
+        self._restarts += 1
+        self._emit(self.crashed)
+        return self._call(op, args)
+
     def _remember(self, op, args, value):
         """What rebuilds the document is known here first, before the window hears of it."""
         with self._cv:
@@ -306,7 +327,7 @@ class EngineClient(QObject):
                 self._emit(self.failed, key, dead)
                 continue
             try:
-                status, value = self._call(op, args)
+                status, value = self._call_retrying(op, args)
                 if status == "ok":
                     self._remember(op, args, value)
             except FileChanged:

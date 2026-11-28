@@ -385,6 +385,7 @@ def scanned(tmp_path, rot=0):
     return path
 
 
+@pytest.mark.own_process
 @pytest.mark.parametrize("rot", [0, 90])
 def test_ocr_georgian_with_spaces_in_the_right_place(tmp_path, rot):
     e = engine(scanned(tmp_path, rot))
