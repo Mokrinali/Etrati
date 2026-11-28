@@ -9,7 +9,7 @@ from .engine import EngineError
 from .features import Features
 
 QUERIES = {"render", "images", "objects", "paths", "erasable", "erase_check", "scale", "scales", "measures", "snaps", "chars", "search", "links", "annots", "all_annots", "widgets", "lines",
-           "ocr_words", "compare", "visual_diff", "mentions", "page_texts", "pdf_box"}
+           "ocr_words", "compare", "visual_diff", "mentions", "page_texts", "pdf_box", "paragraphs"}
 CHANGES = {"open", "replay", "apply", "save", "export", "pdfa"}
 SCAN = {"scan_count", "scan_analyse", "scan_preview", "scan_build", "scan_join"}
 NO_DOC = SCAN | {"open", "replay", "inspect", "merge", "make_pdf", "sign_prepare", "sign_finish",

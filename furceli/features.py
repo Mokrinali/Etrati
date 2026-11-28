@@ -1310,6 +1310,117 @@ class Features(EditEngine):
                         "movable": len(turns) == 1 and None not in turns})
         return out
 
+    # -- paragraphs (HANDOFF.md, item 7, stage 2) -------------------------------------------
+    def paragraphs(self, pno):
+        """Paragraphs of a page as shown: [{lines, texts, text, rect, size, color, leading,
+        left, indent, width, bold, italic, serif, mono, font}], lines numbered as
+        `_raw_lines` numbers them. Only lines that read left to right as shown.
+
+        A paragraph is lines of one size and colour, under one another at an even spacing,
+        with one left edge (the first line may be indented). The lines of the whole page are
+        taken together: on a turned page MuPDF gives every line a block of its own. Each line
+        goes on the paragraph it continues right under; the left edge keeps columns apart."""
+        page = self.doc.load_page(pno)
+        raw = page.get_text("rawdict", flags=self._flags(page))
+        skip = self._not_text(page)
+        rot = page.rotation_matrix
+        turn = Matrix(rot.a, rot.b, rot.c, rot.d, 0, 0)  # directions turn, they do not move
+        lines, n = [], 0
+        for block in raw["blocks"]:
+            pieces = []
+            for ln in block.get("lines", ()):
+                if not ln["spans"]:
+                    continue
+                ln["n"] = n
+                n += 1
+                d = Point(ln["dir"]) * turn
+                if (abs(d.x - 1) > .02 or abs(d.y) > .02 or not self._line_text(ln).strip()
+                        or (skip and self._within(ln["bbox"], skip))):
+                    continue
+                s = ln["spans"][0]
+                origin = Point(s["chars"][0]["origin"]) * rot if s["chars"] else Point(0, 0)
+                pieces.append(([ln], Rect(ln["bbox"]) * rot, origin))
+            lines += self._whole_lines(pieces)
+        lines.sort(key=lambda t: (round(t[2].y, 1), t[1].x0))
+        groups = []
+        for item in lines:
+            fits = [g for g in groups if self._continues(g, item)]
+            if fits:  # the nearest one above
+                min(fits, key=lambda g: item[2].y - g[-1][2].y).append(item)
+            else:
+                groups.append([item])
+        return [self._paragraph(g) for g in groups]
+
+    @staticmethod
+    def _whole_lines(pieces):
+        """Pieces of one block on one baseline as one line ([lns], box, origin): MuPDF splits
+        a justified line where the gaps between its words are wide."""
+        out = []
+        for lns, box, origin in sorted(pieces, key=lambda t: (round(t[2].y, 1), t[1].x0)):
+            s = lns[0]["spans"][0]
+            if out:
+                plns, pbox, porigin = out[-1]
+                ps = plns[0]["spans"][0]
+                if (abs(origin.y - porigin.y) < .5 and abs(s["size"] - ps["size"]) <= .5
+                        and s["color"] == ps["color"]
+                        and pbox.x1 - 1 <= box.x0 <= pbox.x1 + s["size"] * 2):  # not a table's next cell
+                    out[-1] = (plns + lns, pbox | box, porigin)
+                    continue
+            out.append((lns, box, origin))
+        return out
+
+    @staticmethod
+    def _continues(cur, item):
+        """Does this line go on the paragraph cur?"""
+        lns, box, origin = item
+        first, last = cur[0], cur[-1]
+        s, f = lns[0]["spans"][0], first[0][0]["spans"][0]
+        if abs(s["size"] - f["size"]) > .5 or s["color"] != f["color"]:
+            return False
+        gap = origin.y - last[2].y
+        if gap <= s["size"] * .5:
+            return False  # beside, not under: another column or cell
+        if len(cur) >= 2:
+            leading = cur[1][2].y - cur[0][2].y
+            if gap > leading * 1.25 + .5:
+                return False
+            left = cur[1][1].x0
+            return abs(box.x0 - left) <= max(1.0, s["size"] * .3)
+        if gap > s["size"] * 2:  # a single line so far: wider than any usual spacing
+            return False
+        # the second line sets the left edge; the first may stand further in (an indent)
+        return box.x0 - 1 <= first[1].x0 <= box.x0 + s["size"] * 4
+
+    def _paragraph(self, items):
+        lns = [ln for group, _, _ in items for ln in group]  # every piece, for a stale check
+        boxes = [box for _, box, _ in items]
+        texts = [self._line_text(ln) for ln in lns]
+        rect = Rect(boxes[0])
+        for b in boxes[1:]:
+            rect |= b
+        left = boxes[1].x0 if len(boxes) > 1 else boxes[0].x0
+        s = lns[0]["spans"][0]
+        shown = [" ".join(self._line_text(ln).strip() for ln in group) for group, _, _ in items]
+        return dict(self._span_style(s), font=s["font"], lines=[ln["n"] for ln in lns],
+                    texts=texts, text=self._joined(shown),
+                    rect=tuple(round(v, 3) for v in rect.normalize()),
+                    leading=round(items[1][2].y - items[0][2].y, 3) if len(items) > 1 else None,
+                    left=round(left, 3), indent=round(boxes[0].x0 - left, 3),
+                    width=round(max(b.x1 for b in boxes) - left, 3))
+
+    @staticmethod
+    def _joined(texts):
+        """The lines as one text; a word cut at a line's end ("exam-" + "ple") is joined."""
+        out = ""
+        for t in (t.strip() for t in texts):
+            if not out:
+                out = t
+            elif len(out) > 1 and out.endswith("-") and out[-2].isalpha() and t[:1].islower():
+                out = out[:-1] + t
+            else:
+                out += " " + t
+        return out
+
     def _block(self, pno, lines, texts):
         page = self.doc.load_page(pno)
         found = self._raw_lines(page)
