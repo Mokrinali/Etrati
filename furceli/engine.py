@@ -476,12 +476,18 @@ def _prune_field(doc, xref, gone: set, dead: set, depth: int) -> bool:
 
 
 class EditEngine(Engine):
+    # Told after each step of a replay: the window allows every step its own time, so a long
+    # rebuild of many quick edits is not taken for a hung engine (Fable's review, №4).
+    progress = staticmethod(lambda done: None)
+
     def replay(self, path: str, password: str, ops: list) -> dict:
         """Open the untouched original and apply all ops."""
         info = self.open(path, password)
+        self.progress(0)
         try:
-            for op in ops:
+            for i, op in enumerate(ops, 1):
                 self._apply(op)
+                self.progress(i)
         except Exception:
             self.close()  # never leave a half-rebuilt document that could be saved
             raise

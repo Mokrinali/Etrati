@@ -73,8 +73,11 @@ def serve(conn, root=None):
         files._root = root          # its working folders go there too
         convert.IN_ENGINE = True    # Office and Edge are the helper's
     engine = Features()
+    engine.progress = lambda done: conn.send(("tick", done))
     convert.notify = conn.send
     testing = bool(os.environ.get("FURCELI_TEST"))
+    if testing:  # an edit that takes its time, for the tests of slow rebuilds
+        engine._op__nap = lambda seconds: time.sleep(seconds)
     while True:
         try:
             op, args = conn.recv()

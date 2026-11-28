@@ -252,12 +252,15 @@ class EngineClient(QObject):
                     IndexError, MemoryError) as e:
                 raise EOFError("not a reply") from e
             if not (isinstance(reply, tuple) and len(reply) == 2
-                    and reply[0] in ("ok", "err", "started", "ended")):
+                    and reply[0] in ("ok", "err", "started", "ended", "tick")):
                 raise EOFError("not a reply")
             status, value = reply
             if status == "err" and not isinstance(value, str):
                 raise EOFError("not a reply")
-            if status == "started":
+            if status == "tick":  # a step of a replay is done: the next one gets its own time
+                if op == "replay":
+                    end = max(end, time.monotonic() + LONG["apply"])
+            elif status == "started":
                 if self._own(value):
                     self._helpers.append(tuple(value))
             elif status == "ended":
