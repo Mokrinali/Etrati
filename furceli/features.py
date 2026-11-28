@@ -1433,6 +1433,7 @@ class Features(EditEngine):
                     texts=texts, text=self._joined(shown),
                     rect=tuple(round(v, 3) for v in rect.normalize()),
                     leading=round(items[1][2].y - items[0][2].y, 3) if len(items) > 1 else None,
+                    baseline=round(items[0][2].y, 3),
                     left=round(left, 3), indent=round(boxes[0].x0 - left, 3),
                     width=round(max(b.x1 for b in boxes) - left, 3))
 
@@ -1448,6 +1449,63 @@ class Features(EditEngine):
             else:
                 out += " " + t
         return out
+
+    MIN_SHRINK = .85  # more text than fits: the letters get at most this much smaller
+
+    def _op_paragraph(self, pno, lines, texts, new, style):
+        """The paragraph of these lines written anew with new text, in its place: the same
+        left edge, indent, width, first baseline and spacing; size, colour and face from
+        style (or as it was). More text than fits makes the letters a little smaller; what
+        still does not fit is refused, and nothing changes. What lies below is not moved."""
+        page, chosen, turn = self._block(pno, lines, texts)
+        found = [p for p in self.paragraphs(pno) if p["lines"] == [int(n) for n in lines]]
+        if len(found) != 1:
+            raise EngineError("stale")
+        p = found[0]
+        marks = self._outlines(page)
+        weights = [w for ln in chosen for w in self._weights(ln, marks)]
+        made_up = bool(weights) and sum(1 for w in weights if w) * 2 > len(weights)
+        bold = bool(style.get("bold", p["bold"] or made_up))
+        size0 = float(style.get("size", p["size"]))
+        color = tuple(float(c) for c in style.get("color", p["color"]))
+        leading0 = p["leading"] or size0 * 1.2
+        rows = self._rows_of(p)
+        width = max(p["width"], p["indent"] + 1)
+        d = chosen[0]["dir"]
+        face = {"serif": bool(style.get("serif", p["serif"])),
+                "mono": bool(style.get("mono", p["mono"])), "bold": bold and not made_up,
+                "italic": bool(style.get("italic", p["italic"]))}
+        page = None
+        put = []
+        if new.strip():  # measured before anything is cut: what does not fit changes nothing
+            font = pymupdf.Font(fontfile=_font_file(new, **face))
+            size = size0
+            while True:
+                put = _wrap(new, lambda s: font.text_length(s, fontsize=size), width,
+                            max(p["indent"], 0))
+                if len(put) <= rows or size <= size0 * self.MIN_SHRINK:
+                    break
+                size = max(size - .25, size0 * self.MIN_SHRINK)
+            if len(put) > rows:
+                raise EngineError("paragraph_overflow")
+            leading = leading0 * size / size0
+        page = self._cut_block(pno, chosen, turn)
+        if not put:
+            return self._same(pno)
+        kind = _Type(page, new, **face)
+        outline = max((w for w in weights if w), default=None) if made_up and bold else None
+        for i, line in enumerate(put):
+            at = Point(p["left"] + (p["indent"] if i == 0 else 0), p["baseline"] + i * leading)
+            self._put_runs(page, kind, at, d, line, [outline] * len(line), size,
+                           p["size"], color, turn)
+        return self._same(pno)
+
+    @staticmethod
+    def _rows_of(p):
+        """How many lines a paragraph has room for: the lines it had."""
+        if not p["leading"]:
+            return 1
+        return max(1, round((p["rect"][3] - p["rect"][1] - p["size"]) / p["leading"]) + 1)
 
     def _block(self, pno, lines, texts):
         page = self.doc.load_page(pno)
