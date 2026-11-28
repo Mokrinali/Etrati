@@ -140,6 +140,49 @@ def test_the_window_can_ask_the_engine(app, tmp_path):  # noqa: F811
         c.shutdown()
 
 
+# -- step 2: new text into lines of the paragraph's width ----------------------------------
+def units(s):
+    return float(len(s))  # every character one unit wide
+
+
+def test_words_fill_each_line_and_go_on_to_the_next():
+    from furceli.features import _wrap
+    assert _wrap("aa bb cc dd ee", units, 5) == ["aa bb", "cc dd", "ee"]
+    assert _wrap("aa bb cc", units, 8) == ["aa bb cc"]
+
+
+def test_the_first_line_keeps_its_indent():
+    from furceli.features import _wrap
+    assert _wrap("aa bb cc dd", units, 6, indent=3) == ["aa", "bb cc", "dd"]
+
+
+def test_spaces_do_not_pile_up_and_nothing_is_lost():
+    from furceli.features import _wrap
+    assert _wrap("  aa   bb  ", units, 10) == ["aa bb"]
+    assert _wrap("", units, 10) == [] and _wrap("   ", units, 10) == []
+
+
+def test_a_line_break_typed_by_the_user_is_kept():
+    from furceli.features import _wrap
+    assert _wrap("aa bb\ncc", units, 20) == ["aa bb", "cc"]
+
+
+def test_a_word_longer_than_the_line_is_cut():
+    from furceli.features import _wrap
+    assert _wrap("abcdefghij kl", units, 4) == ["abcd", "efgh", "ij", "kl"]
+    assert _wrap("abc", units, .5) == ["a", "b", "c"]  # never stuck, at least a letter a line
+
+
+def test_georgian_with_a_real_font_fits_the_width():
+    from furceli.features import _wrap
+    font = pymupdf.Font(fontfile=FONT)
+    measure = lambda s: font.text_length(s, fontsize=12)  # noqa: E731
+    text = "საქართველოს კანონი ადგენს წესს, რომლის მიხედვითაც ყველა მოქალაქე ვალდებულია"
+    lines = _wrap(text, measure, 180)
+    assert len(lines) > 1 and " ".join(lines) == text
+    assert all(measure(ln) <= 180 for ln in lines)
+
+
 def test_lines_are_numbered_as_the_text_tools_number_them(tmp_path):
     lines = [(72, 270, "სათაური Heading", 18, (0, 0, 0))] + body(72, 300, FOUR)
     e = engine(make(tmp_path, lines))

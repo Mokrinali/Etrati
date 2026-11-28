@@ -110,6 +110,34 @@ class _Type:
             render_mode=mode, **extra)
 
 
+def _wrap(text, measure, width, indent=0.0) -> list:
+    """text as lines no wider than width (measure(s) gives the width of s); the first line
+    starts indent further in. A line break typed by the user stays; a word longer than a
+    line is cut, at least one letter a line."""
+    out = []
+    for part in text.split("\n"):
+        line = ""
+        for word in part.split():
+            room = width - (indent if not out else 0)
+            trial = f"{line} {word}" if line else word
+            if measure(trial) <= room:
+                line = trial
+                continue
+            if line:
+                out.append(line)
+                line, room = "", width
+            while measure(word) > room and len(word) > 1:  # too long for a line of its own
+                cut = 1
+                while cut < len(word) and measure(word[:cut + 1]) <= room:
+                    cut += 1
+                out.append(word[:cut])
+                word, room = word[cut:], width
+            line = word
+        if line:
+            out.append(line)
+    return out
+
+
 def _words(lines):
     """[(x0, y0, x1, y1, word), ...] from Engine.chars() lines."""
     out = []
