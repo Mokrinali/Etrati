@@ -63,13 +63,78 @@ def _font_file(text: str, serif=False, mono=False, bold=False, italic=False) -> 
     return best
 
 
-def _subset(path: str, text: str) -> bytes:
-    """Only the glyphs that are used, so a file grows by kilobytes, not megabytes."""
+def _plain_font(name: str) -> str:
+    """A font's name to compare by: "ABCDEF+Bebas Neue Regular" and "BebasNeueRegular" match."""
+    return re.sub(r"[\s_-]", "", name.split("+", 1)[-1]).lower()
+
+
+_INSTALLED: dict | None = None
+
+
+def _installed_fonts() -> dict:
+    """{plain name: file} of the TrueType/OpenType fonts installed for everyone and for this
+    user (the registry's list, read once)."""
+    global _INSTALLED
+    if _INSTALLED is None:
+        _INSTALLED = {}
+        if os.name == "nt":
+            import winreg
+            key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+            mine = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")
+            for hive, base in ((winreg.HKEY_LOCAL_MACHINE, FONTS), (winreg.HKEY_CURRENT_USER, mine)):
+                try:
+                    k = winreg.OpenKey(hive, key)
+                except OSError:
+                    continue
+                with k:
+                    i = 0
+                    while True:
+                        try:
+                            name, value, _ = winreg.EnumValue(k, i)
+                        except OSError:
+                            break
+                        i += 1
+                        path = value if os.path.isabs(str(value)) else os.path.join(base, str(value))
+                        if path.lower().endswith((".ttf", ".otf")) and os.path.exists(path):
+                            label = re.sub(r"\s*\(.*\)\s*$", "", name)
+                            _INSTALLED.setdefault(_plain_font(label), path)
+    return _INSTALLED
+
+
+_STYLE_ENDINGS = ("", "regular", "normal", "roman", "book", "mt", "psmt")
+
+
+def _same_font_name(a: str, b: str) -> bool:
+    """Plain names of one font, also when one of them adds "Regular" or "MT" ("Bebas Neue"
+    and "BebasNeueRegular"); "Geo" is not "Georgia"."""
+    if not a or not b:
+        return False
+    short, long = sorted((a, b), key=len)
+    return long.startswith(short) and long[len(short):] in _STYLE_ENDINGS
+
+
+def _installed_font(name: str, text: str) -> str | None:
+    """The file of the installed font of this name, when it has every letter of text."""
+    want, fonts = _plain_font(name), _installed_fonts()
+    path = fonts.get(want) or next((p for n, p in fonts.items() if _same_font_name(n, want)), None)
+    if not path:
+        return None
+    try:
+        font = pymupdf.Font(fontfile=path)
+    except Exception:  # noqa: BLE001 - a font that cannot be read is simply not used
+        return None
+    need = {c for c in text if c not in "\n\r\t"} | {" "}
+    return path if all(font.has_glyph(ord(c)) for c in need) else None
+
+
+def _subset(path, text: str) -> bytes:
+    """Only the glyphs that are used, so a file grows by kilobytes, not megabytes. path may
+    also be a font program as bytes (a document's own font)."""
     import logging
     from fontTools import subset
     logging.getLogger("fontTools").setLevel(logging.ERROR)
     from fontTools.ttLib import TTFont
-    font = TTFont(path)
+    font = TTFont(io.BytesIO(path) if isinstance(path, (bytes, bytearray)) else path)
     opt = subset.Options()
     opt.notdef_outline, opt.recalc_timestamp = True, False
     opt.layout_features = []
@@ -84,9 +149,11 @@ def _subset(path: str, text: str) -> bytes:
 class _Type:
     """Writes text on a page with a subset font."""
 
-    def __init__(self, page, text, **style):
-        path = _font_file(text, **style)
-        data = _subset(path, text)
+    def __init__(self, page, text, data=None, **style):
+        """data: a font program to write with as it is (a document's own, already subset);
+        otherwise a Windows font that has every letter, subset to the text."""
+        if data is None:
+            data = _subset(_font_file(text, **style), text)
         self.page, self.font = page, pymupdf.Font(fontbuffer=data)
         self.name = f"FU{page.parent.xref_length()}"
         page.insert_font(fontname=self.name, fontbuffer=data)
@@ -721,6 +788,10 @@ class Features(EditEngine):
             new_weights = [max(w for w in weights if w)] * len(new)
         else:
             new_weights = [None] * len(new)
+        # the line's own font (embedded or installed) when the look is kept: see _matching_font
+        same_look = (style["bold"] == self._looks_bold(ln, weights)
+                     and bool(style["italic"]) == bool(first["flags"] & 2))
+        font_data = self._matching_font(page, ln, new) if new.strip() and same_look else None
         strips = self._line_strips(pno, chars, turn, own)
         again = []
         if strips is None:
@@ -745,7 +816,7 @@ class Features(EditEngine):
                          bold=st["bold"] and not any(ws), italic=st["italic"])
             self._put_runs(page, kind, at, d, text, ws, st["size"], st["size"], st["color"], turn)
         if new.strip():
-            kind = _Type(page, new, serif=style["serif"], mono=style["mono"],
+            kind = _Type(page, new, data=font_data, serif=style["serif"], mono=style["mono"],
                          bold=style["bold"] and not made_up, italic=style["italic"])
             size = style["size"]
             at = Point(chars[0]["origin"])
@@ -1398,7 +1469,31 @@ class Features(EditEngine):
         return out
 
     @staticmethod
-    def _continues(cur, item):
+    def _tolerance(item):
+        return max(1.0, item[0][0]["spans"][0]["size"] * .3)
+
+    def _wordy(self, *items):
+        """A line of at least three words among these: centred or right-aligned lines of
+        single words are a table's column of numbers, not a paragraph."""
+        return any(len(" ".join(self._line_text(ln) for ln in it[0]).split()) >= 3 for it in items)
+
+    @staticmethod
+    def _mode(items):
+        """How the lines of a paragraph line up: "left" (the first may be indented), "center"
+        or "right", by the second line against the others."""
+        if len(items) < 2:
+            return "left"
+        a, b = items[0][1], items[1][1]
+        tol = Features._tolerance(items[1])
+        # centred first: a narrower centred first line would pass for an indented one, while
+        # an indent of more than a few points moves a line's middle well off
+        if abs(a.x0 - b.x0) > tol and abs((a.x0 + a.x1) / 2 - (b.x0 + b.x1) / 2) <= tol:
+            return "center"
+        if b.x0 - 1 <= a.x0 <= b.x0 + items[1][0][0]["spans"][0]["size"] * 4:
+            return "left"
+        return "right"
+
+    def _continues(self, cur, item):
         """Does this line go on the paragraph cur?"""
         lns, box, origin = item
         first, last = cur[0], cur[-1]
@@ -1408,16 +1503,26 @@ class Features(EditEngine):
         gap = origin.y - last[2].y
         if gap <= s["size"] * .5:
             return False  # beside, not under: another column or cell
+        tol = self._tolerance(item)
         if len(cur) >= 2:
             leading = cur[1][2].y - cur[0][2].y
             if gap > leading * 1.25 + .5:
                 return False
-            left = cur[1][1].x0
-            return abs(box.x0 - left) <= max(1.0, s["size"] * .3)
+            ref, mode = cur[1][1], self._mode(cur)
+            if mode == "left":
+                return abs(box.x0 - ref.x0) <= tol
+            if mode == "center":
+                return abs((box.x0 + box.x1) / 2 - (ref.x0 + ref.x1) / 2) <= tol
+            return abs(box.x1 - ref.x1) <= tol
         if gap > s["size"] * 2:  # a single line so far: wider than any usual spacing
             return False
-        # the second line sets the left edge; the first may stand further in (an indent)
-        return box.x0 - 1 <= first[1].x0 <= box.x0 + s["size"] * 4
+        # the second line sets the edge; the first may stand further in (an indent)
+        a = first[1]
+        if box.x0 - 1 <= a.x0 <= box.x0 + s["size"] * 4:
+            return True
+        lined_up = (abs((a.x0 + a.x1) / 2 - (box.x0 + box.x1) / 2) <= tol
+                    or abs(a.x1 - box.x1) <= tol)
+        return lined_up and self._wordy(first, item)
 
     def _paragraph(self, items):
         lns = [ln for group, _, _ in items for ln in group]  # every piece, for a stale check
@@ -1426,16 +1531,27 @@ class Features(EditEngine):
         rect = Rect(boxes[0])
         for b in boxes[1:]:
             rect |= b
-        left = boxes[1].x0 if len(boxes) > 1 else boxes[0].x0
+        mode = self._mode(items)
+        right = max(b.x1 for b in boxes)
+        if mode == "left":
+            left = boxes[1].x0 if len(boxes) > 1 else boxes[0].x0
+            ends = [b.x1 for b in boxes[:-1]]
+            tol = max(1.5, items[0][0][0]["spans"][0]["size"] * .15)
+            if len(boxes) >= 3 and all(abs(x - right) <= tol for x in ends):
+                mode = "justify"  # every line but the last reaches the right edge
+            indent = boxes[0].x0 - left
+        else:
+            left, indent = rect.x0, 0.0
         s = lns[0]["spans"][0]
         shown = [" ".join(self._line_text(ln).strip() for ln in group) for group, _, _ in items]
         return dict(self._span_style(s), font=s["font"], lines=[ln["n"] for ln in lns],
                     texts=texts, text=self._joined(shown),
                     rect=tuple(round(v, 3) for v in rect.normalize()),
                     leading=round(items[1][2].y - items[0][2].y, 3) if len(items) > 1 else None,
-                    baseline=round(items[0][2].y, 3),
-                    left=round(left, 3), indent=round(boxes[0].x0 - left, 3),
-                    width=round(max(b.x1 for b in boxes) - left, 3))
+                    baseline=round(items[0][2].y, 3), align=mode,
+                    left=round(left, 3), indent=round(indent, 3), width=round(right - left, 3),
+                    center=round(sum((b.x0 + b.x1) / 2 for b in boxes) / len(boxes), 3),
+                    right=round(right, 3))
 
     @staticmethod
     def _joined(texts):
@@ -1475,14 +1591,19 @@ class Features(EditEngine):
         face = {"serif": bool(style.get("serif", p["serif"])),
                 "mono": bool(style.get("mono", p["mono"])), "bold": bold and not made_up,
                 "italic": bool(style.get("italic", p["italic"]))}
+        # the paragraph's own font when it has every letter (and the style is kept): the text
+        # looks as it did; otherwise the nearest Windows font
+        own = (self._matching_font(page, chosen[0], new)
+               if face["bold"] == bool(p["bold"]) and face["italic"] == bool(p["italic"]) else None)
         page = None
-        put = []
+        put = []  # [(line, ends a part the user typed)]
         if new.strip():  # measured before anything is cut: what does not fit changes nothing
-            font = pymupdf.Font(fontfile=_font_file(new, **face))
+            font = (pymupdf.Font(fontbuffer=own) if own else
+                    pymupdf.Font(fontfile=_font_file(new, **face)))
             size = size0
             while True:
-                put = _wrap(new, lambda s: font.text_length(s, fontsize=size), width,
-                            max(p["indent"], 0))
+                put = self._wrapped(new, lambda s: font.text_length(s, fontsize=size), width,
+                                    max(p["indent"], 0))
                 if len(put) <= rows or size <= size0 * self.MIN_SHRINK:
                     break
                 size = max(size - .25, size0 * self.MIN_SHRINK)
@@ -1492,13 +1613,72 @@ class Features(EditEngine):
         page = self._cut_block(pno, chosen, turn)
         if not put:
             return self._same(pno)
-        kind = _Type(page, new, **face)
+        kind = _Type(page, new, data=own, **face)
         outline = max((w for w in weights if w), default=None) if made_up and bold else None
-        for i, line in enumerate(put):
-            at = Point(p["left"] + (p["indent"] if i == 0 else 0), p["baseline"] + i * leading)
-            self._put_runs(page, kind, at, d, line, [outline] * len(line), size,
+
+        def write(text, x, y):
+            self._put_runs(page, kind, Point(x, y), d, text, [outline] * len(text), size,
                            p["size"], color, turn)
+        for i, (line, last) in enumerate(put):
+            y, w = p["baseline"] + i * leading, kind.width(line, size)
+            if p["align"] == "center":
+                write(line, p["center"] - w / 2, y)
+                continue
+            if p["align"] == "right":
+                write(line, p["right"] - w, y)
+                continue
+            x = p["left"] + (p["indent"] if i == 0 else 0)
+            words = line.split(" ")
+            if p["align"] != "justify" or last or len(words) < 2:
+                write(line, x, y)
+                continue
+            gap = (p["right"] - x - sum(kind.width(t, size) for t in words)) / (len(words) - 1)
+            for t in words:  # justified: the room left over shared between the words
+                write(t, x, y)
+                x += kind.width(t, size) + gap
         return self._same(pno)
+
+    def _matching_font(self, page, ln, text):
+        """The font program to write text in so that it looks like the line: its own font
+        embedded in the file when that has every letter; otherwise the same font installed on
+        this computer (a drawing program embeds only the letters it used); None when neither
+        will do, and a look-alike is chosen."""
+        own = self._own_font(page, ln, text)
+        if own:
+            return own
+        path = _installed_font(ln["spans"][0]["font"], text)
+        return _subset(path, text) if path else None
+
+    def _own_font(self, page, ln, text):
+        """The font program a line is written in, when it is a TrueType/OpenType font that has
+        every letter of text (and the space); None otherwise. It is subset anew to the text:
+        a program's subset may map the space and the no-break space to one glyph, and then
+        a written space would read back as a no-break space (search would not find it)."""
+        name = _plain_font(ln["spans"][0]["font"])
+        need = {c for c in text if c not in "\n\r\t"} | {" "}
+        for xref, *_rest in page.get_fonts(full=True):
+            if not _same_font_name(_plain_font(_rest[2] if len(_rest) > 2 else ""), name):
+                continue
+            try:
+                _, ext, _, data = self.doc.extract_font(xref)
+                if ext not in ("ttf", "otf") or not data:
+                    continue
+                font = pymupdf.Font(fontbuffer=data)
+                if all(font.has_glyph(ord(c)) for c in need):
+                    return _subset(data, text)
+            except Exception:  # noqa: BLE001 - a font that cannot be read is simply not used
+                continue
+        return None
+
+    @staticmethod
+    def _wrapped(text, measure, width, indent):
+        """_wrap for each part the user typed, each line marked when it ends its part: such
+        a line is never stretched in a justified paragraph."""
+        out = []
+        for part in text.split("\n"):
+            lines = _wrap(part, measure, width, indent if not out else 0.0)
+            out += [(ln, k == len(lines) - 1) for k, ln in enumerate(lines)]
+        return out
 
     @staticmethod
     def _rows_of(p):

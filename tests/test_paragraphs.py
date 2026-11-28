@@ -268,6 +268,155 @@ def test_a_rebuild_after_a_crash_writes_the_same(tmp_path):
     assert [p["text"] for p in again.paragraphs(0)] == [p["text"] for p in e.paragraphs(0)]
 
 
+# -- step 5: centred, right-aligned and justified paragraphs ---------------------------------
+CENTRED = ["ეს არის ცენტრში სწორებული სათაური", "მეორე სტრიქონი უფრო მოკლეა",
+           "და მესამე სტრიქონი ისევ ცოტა გრძელია"]
+
+
+def aligned(texts, how, edge, y=300, size=12, leading=16):
+    """Lines placed as a program places centred (edge = middle) or right-aligned text."""
+    font = pymupdf.Font(fontfile=FONT)
+    out = []
+    for i, t in enumerate(texts):
+        w = font.text_length(t, fontsize=size)
+        x = edge - w / 2 if how == "center" else edge - w
+        out.append((x, y + i * leading, t, size, (0, 0, 0)))
+    return out
+
+
+def test_a_centred_paragraph_is_one_paragraph(tmp_path):
+    (p,) = paras(make(tmp_path, aligned(CENTRED, "center", 300)))
+    assert p["align"] == "center" and p["texts"] == CENTRED
+
+
+def test_a_right_aligned_paragraph_is_one_paragraph(tmp_path):
+    (p,) = paras(make(tmp_path, aligned(CENTRED, "right", 520)))
+    assert p["align"] == "right" and p["texts"] == CENTRED
+
+
+def test_a_column_of_numbers_is_not_a_paragraph(tmp_path):
+    got = paras(make(tmp_path, aligned(["1 250.00", "37.50", "12 000.00", "8.10"], "right", 520)))
+    assert len(got) > 1
+
+
+def test_justified_and_left_are_told_apart(tmp_path):
+    first = paras(html_page(tmp_path, JUSTIFIED))[0]
+    assert first["align"] == "justify"
+    assert paras(make(tmp_path, body(72, 300, FOUR), name="l.pdf"))[0]["align"] == "left"
+
+
+def line_boxes(e):
+    """[(x0, x1)] of the first paragraph's lines, as shown."""
+    page = e.doc[0]
+    p = e.paragraphs(0)[0]
+    raw = e._raw_lines(page)
+    boxes = {}
+    for n in p["lines"]:
+        r = pymupdf.Rect(raw[n]["bbox"]) * page.rotation_matrix
+        key = round(r.y1)
+        x0, x1 = boxes.get(key, (r.x0, r.x1))
+        boxes[key] = (min(x0, r.x0), max(x1, r.x1))
+    return [boxes[k] for k in sorted(boxes)]
+
+
+NEW_LONG = ("ახალი ტექსტი, რომელიც რამდენიმე სტრიქონზე უნდა გადანაწილდეს, რადგან საკმაოდ "
+            "გრძელია და ერთ სტრიქონში ვერ ეტევა")
+
+
+NEW_TWO = "ახალი ტექსტი, რომელიც ორ სტრიქონზე გადანაწილდება აქ"
+
+
+def test_a_centred_paragraph_is_written_centred(tmp_path):
+    e = engine(make(tmp_path, aligned(CENTRED, "center", 300)))
+    edit(e, e.paragraphs(0)[0], NEW_TWO)
+    boxes = line_boxes(e)
+    assert len(boxes) > 1 and e.paragraphs(0)[0]["align"] == "center"
+    assert all(abs((x0 + x1) / 2 - 300) < 1.5 for x0, x1 in boxes)
+
+
+def test_a_right_aligned_paragraph_is_written_right_aligned(tmp_path):
+    e = engine(make(tmp_path, aligned(CENTRED, "right", 520)))
+    edit(e, e.paragraphs(0)[0], NEW_TWO)
+    boxes = line_boxes(e)
+    assert len(boxes) > 1 and all(abs(x1 - 520) < 1.5 for _, x1 in boxes)
+
+
+def test_a_justified_paragraph_is_written_justified(tmp_path):
+    e = engine(html_page(tmp_path, JUSTIFIED))
+    first = e.paragraphs(0)[0]
+    right = first["left"] + first["width"]
+    edit(e, first, NEW_LONG + " " + NEW_LONG)
+    boxes = line_boxes(e)
+    assert len(boxes) > 2
+    assert all(abs(x1 - right) < 1.5 for _, x1 in boxes[:-1])  # every line but the last
+    assert boxes[-1][1] < right - 5  # the last one is not stretched
+    assert e.paragraphs(0)[0]["align"] == "justify"
+
+
+def fonts_of_first_paragraph(e):
+    page, p = e.doc[0], e.paragraphs(0)[0]
+    raw = e._raw_lines(page)
+    return {s["font"] for n in p["lines"] for s in raw[n]["spans"]}
+
+
+def test_the_paragraphs_own_font_is_kept_when_it_has_every_letter(tmp_path):
+    """Georgia is embedded whole here and is no look-alike ETRATI would pick (that would be
+    Times New Roman): the new text is written in Georgia itself."""
+    d = pymupdf.open()
+    p = d.new_page()
+    p.insert_font(fontname="G", fontfile=r"C:\Windows\Fonts\georgia.ttf")
+    for i, t in enumerate(["The first line of a paragraph", "and the second line of it",
+                           "and a third one as well"]):
+        p.insert_text((72, 300 + i * 16), t, fontname="G", fontsize=12)
+    path = str(tmp_path / "georgia.pdf")
+    d.save(path)
+    e = engine(path)
+    before = fonts_of_first_paragraph(e)
+    edit(e, e.paragraphs(0)[0], "New words written in the very same face")
+    assert fonts_of_first_paragraph(e) == before and "Georgia" in " ".join(before)
+
+
+def test_a_font_without_the_new_letters_gives_way_to_a_look_alike(tmp_path):
+    d = pymupdf.open(make(tmp_path, body(72, 300, ["abc abc abc", "abc abc abc"])))
+    d.subset_fonts()  # only a, b, c and the space are left in it
+    path = str(tmp_path / "subset.pdf")
+    d.save(path)
+    e = engine(path)
+    edit(e, e.paragraphs(0)[0], "xyz ჟღერადობა")
+    assert e.paragraphs(0)[0]["text"] == "xyz ჟღერადობა"
+
+
+def georgia_subset(tmp_path):
+    """Three lines in Georgia, the font embedded with only the letters used (as a drawing
+    program saves it): new letters are not in the file, but Georgia is installed."""
+    d = pymupdf.open()
+    p = d.new_page()
+    p.insert_font(fontname="G", fontfile=r"C:\Windows\Fonts\georgia.ttf")
+    for i in range(3):
+        p.insert_text((72, 300 + i * 16), "abc cab bca abc", fontname="G", fontsize=12)
+    d.subset_fonts()
+    path = str(tmp_path / "georgia-subset.pdf")
+    d.save(path)
+    return path
+
+
+def test_an_installed_font_of_the_same_name_fills_in_the_missing_letters(tmp_path):
+    e = engine(georgia_subset(tmp_path))
+    edit(e, e.paragraphs(0)[0], "New words with letters the file never had: xyz")
+    assert all("Georgia" in f for f in fonts_of_first_paragraph(e))  # not Times New Roman
+
+
+def test_a_changed_line_keeps_its_font_too(tmp_path):
+    e = engine(georgia_subset(tmp_path))
+    ln = e.lines(0)[0]
+    style = {k: ln[k] for k in ("size", "color", "bold", "italic", "serif", "mono")}
+    e.apply(("replace", 0, ln["index"], ln["text"], "xyz new words", style))
+    page = e.doc[0]
+    fonts = {s["font"] for b in page.get_text("rawdict")["blocks"] for l in b.get("lines", ())
+             for s in l["spans"] if "xyz" in "".join(c["c"] for c in s["chars"])}
+    assert fonts and all("Georgia" in f for f in fonts)
+
+
 def test_lines_are_numbered_as_the_text_tools_number_them(tmp_path):
     lines = [(72, 270, "სათაური Heading", 18, (0, 0, 0))] + body(72, 300, FOUR)
     e = engine(make(tmp_path, lines))
