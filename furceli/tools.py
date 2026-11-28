@@ -16,7 +16,8 @@ from .client import P_TEXT, TaskError, run_task
 from .engine import EngineError
 from .dialogs import PDF_FILTER, error_text, warn_unprotected
 from .forms import (ChoicesDialog, CompareDialog, CompressDialog, FieldDialog, HeaderDialog,
-                    LineDialog, OcrDialog, ProtectDialog, ScrubDialog, SignDialog, SignaturePad,
+                    LineDialog, OcrDialog, ParagraphDialog, ProtectDialog, ScrubDialog,
+                    SignDialog, SignaturePad,
                     TextDialog, VerifyDialog, WatermarkDialog)
 
 TYPE_NAMES = {"Highlight": "მარკერი", "Underline": "ხაზგასმა", "StrikeOut": "გადახაზვა",
@@ -710,6 +711,17 @@ class ToolsMixin:
                         "ამოცნობა…", self.ocr)
             return
         ln = best[1]
+        found = [p for p in self._task("paragraphs", (pno,), "იკითხება…") or []
+                 if ln["index"] in p["lines"]]
+        if found and len(found[0]["lines"]) > 1:  # a line of a paragraph: the whole paragraph
+            p = found[0]
+            dlg = ParagraphDialog(p, self)
+            answer = dlg.exec()
+            if answer != ParagraphDialog.LINE_ONLY:
+                if answer and (dlg.text() != p["text"] or dlg.style_changed()):
+                    self.edit(("paragraph", pno, list(p["lines"]), list(p["texts"]), dlg.text(),
+                               dlg.style_()))
+                return
         dlg = LineDialog(ln, self)
         if dlg.exec() and (dlg.text() != ln["text"] or dlg.style_changed()):
             self.edit(("replace", pno, ln["index"], ln["text"], dlg.text(), dlg.style_()))

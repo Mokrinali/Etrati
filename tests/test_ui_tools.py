@@ -168,6 +168,8 @@ def test_edit_line(win, tmp_path, monkeypatch):  # noqa: F811
         dlg._text.setText("შეცვლილი სტრიქონი")
         return True
     monkeypatch.setattr(forms.LineDialog, "exec", run)
+    # a line of a paragraph opens the paragraph; "only this line" leads here
+    monkeypatch.setattr(forms.ParagraphDialog, "exec", lambda dlg: forms.ParagraphDialog.LINE_ONLY)
     win.tool_acts["edit"].trigger()
     QTest.mouseClick(doc.view.viewport(), Qt.MouseButton.LeftButton,
                      pos=vp(doc.view, 0, 120, 120 + 3 * 15 - 4))
