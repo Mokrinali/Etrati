@@ -70,7 +70,7 @@ def main():
     from PySide6.QtWidgets import QApplication
     app = QApplication([])
     import pymupdf
-    from furceli import files, theme
+    from furceli import files, signing, theme
     from furceli.client import EngineClient, TaskError, run_task
     from furceli.helper import convert_first
     log("frozen", getattr(sys, "frozen", False), sys.executable)
@@ -253,13 +253,13 @@ def main():
     # -- certificate signature ----------------------------------------------------------------
     def sign():
         c = EngineClient()
-        pfx = files.outbox(os.path.join(work, "test.pfx"))
+        pfx = os.path.join(work, "test.pfx")
         signed = files.outbox(os.path.join(work, "signed.pdf"))
         plain = os.path.join(work, "plain.pdf")
         shutil.copyfile(pdf, plain)
         try:
-            run_task(c, "make_certificate", (pfx, "pw", "Test"))
-            run_task(c, "sign", (plain, signed, "", pfx, "pw", {}))
+            signing.make_certificate(pfx, "pw", "Test")  # the window's work, not the engine's
+            signing.sign_through(c, plain, signed, "", pfx, "pw", {})
             res = run_task(c, "verify", (signed, ""))
         finally:
             c.shutdown()

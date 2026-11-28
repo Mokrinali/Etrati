@@ -22,11 +22,14 @@ TIMEOUT = 60.0
 LONG = {"save": 900.0, "export": 900.0, "merge": 900.0, "replay": 300.0,
         "apply": 300.0, "open": 120.0, "make_pdf": 900.0, "convert": 900.0, "export_as": 1800.0,
         "to_images": 900.0, "compare": 600.0, "visual_diff": 300.0, "ocr_words": 300.0,
-        "sign": 120.0, "pdfa": 900.0,
+        "sign_prepare": 120.0, "sign_finish": 120.0, "pdfa": 900.0,
         "all_annots": 300.0, "scan_build": 300.0, "scan_analyse": 180.0, "scan_join": 600.0,
         "scan_count": 300.0, "scan_preview": 180.0, "page_texts": 300.0, "mentions": 300.0}
 MAX_RESTARTS = 5             # in a row, without a single success between them
 ALWAYS_TRY = {"save", "export", "replay", "open", "pdfa"}  # the user's work depends on these
+# OCR in MuPDF/Tesseract now and then crashes the engine (HANDOFF, point 2). These operations
+# only read and make their own output, so after a crash they are tried once more.
+RETRY_ONCE = {"scan_analyse", "scan_build", "ocr_words"}
 
 
 MAX_REPLY = 1 << 29  # a reply larger than this is no answer of an engine that works
@@ -249,12 +252,15 @@ class EngineClient(QObject):
                     IndexError, MemoryError) as e:
                 raise EOFError("not a reply") from e
             if not (isinstance(reply, tuple) and len(reply) == 2
-                    and reply[0] in ("ok", "err", "started", "ended")):
+                    and reply[0] in ("ok", "err", "started", "ended", "tick")):
                 raise EOFError("not a reply")
             status, value = reply
             if status == "err" and not isinstance(value, str):
                 raise EOFError("not a reply")
-            if status == "started":
+            if status == "tick":  # a step of a replay is done: the next one gets its own time
+                if op == "replay":
+                    end = max(end, time.monotonic() + LONG["apply"])
+            elif status == "started":
                 if self._own(value):
                     self._helpers.append(tuple(value))
             elif status == "ended":
@@ -273,6 +279,24 @@ class EngineClient(QObject):
                     self._lost = True
                     raise FileChanged
         return self._ask(op, args)
+
+    def _call_retrying(self, op, args):
+        """_call, once more in a new engine if the engine died of itself (not hung, not
+        cancelled) during an operation of RETRY_ONCE."""
+        try:
+            return self._call(op, args)
+        except FileChanged:
+            raise
+        except Exception:
+            if op not in RETRY_ONCE or self._proc is None or self._aborting or self._stop:
+                raise
+            self._proc.join(1)  # the pipe breaks a moment before the process is gone
+            if self._proc.exitcode is None:  # it hangs: one wait is enough
+                raise
+        self._kill()
+        self._restarts += 1
+        self._emit(self.crashed)
+        return self._call(op, args)
 
     def _remember(self, op, args, value):
         """What rebuilds the document is known here first, before the window hears of it."""
@@ -306,7 +330,7 @@ class EngineClient(QObject):
                 self._emit(self.failed, key, dead)
                 continue
             try:
-                status, value = self._call(op, args)
+                status, value = self._call_retrying(op, args)
                 if status == "ok":
                     self._remember(op, args, value)
             except FileChanged:

@@ -77,6 +77,50 @@ def test_garbage_is_ignored(app, name, data):  # noqa: F811
     s.abort()
 
 
+def test_channel_is_per_user_and_session_not_per_name(monkeypatch):
+    """Fable's review, №9: pipe names are shared by the whole computer. A user name is not
+    unique (a local and a domain "admin"), and one user may sit in two sessions."""
+    monkeypatch.setattr(single, "_identity", lambda: ("S-1-5-21-1-1001", 1))
+    first = single.channel()
+    monkeypatch.setattr(single.getpass, "getuser", lambda: "someone else")
+    assert single.channel() == first  # the account decides, not its name
+    monkeypatch.setattr(single, "_identity", lambda: ("S-1-5-21-1-1001", 2))
+    assert single.channel() != first  # another session of the same user
+    monkeypatch.setattr(single, "_identity", lambda: ("S-1-5-21-2-1001", 1))
+    assert single.channel() != first  # another account with the same name
+
+
+def test_this_users_own_server_is_trusted(app, name):  # noqa: F811
+    from PySide6.QtNetwork import QLocalServer
+    server = QLocalServer()
+    assert server.listen(name)
+    s = QLocalSocket()
+    s.connectToServer(name)
+    assert s.waitForConnected(1000)
+    assert single.server_is_mine(s) is True
+    s.abort()
+    server.close()
+
+
+def test_files_are_not_given_to_a_stranger(app, name, monkeypatch):  # noqa: F811
+    """A program of another user may take the pipe's name first; it gets no paths."""
+    from PySide6.QtNetwork import QLocalServer
+    server = QLocalServer()
+    assert server.listen(name)
+    monkeypatch.setattr(single, "server_is_mine", lambda sock: False)
+    assert single.hand_over([r"C:\secret\contract.pdf"], name, wait=300) is False
+    end = time.time() + .5
+    while time.time() < end:
+        QApplication.processEvents()
+    conn = server.nextPendingConnection()
+    heard = b""
+    if conn is not None:
+        conn.waitForReadyRead(200)
+        heard = bytes(conn.readAll().data())
+    assert b"secret" not in heard
+    server.close()
+
+
 def test_channel_is_private_to_settings(monkeypatch):
     monkeypatch.setenv("FURCELI_SETTINGS", "a")
     first = single.channel()

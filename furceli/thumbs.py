@@ -54,6 +54,9 @@ class ThumbModel(QAbstractListModel):
         pno = index.row()
         if role == Qt.ItemDataRole.DisplayRole:
             return self.doc.page_label(pno)
+        if role == Qt.ItemDataRole.ToolTipRole:  # the whole name, when the page has one
+            label = self.doc.page_label(pno)
+            return label if label != str(pno + 1) else None
         if role == Qt.ItemDataRole.SizeHintRole:
             return QSize(self.w + 24, self.h + 38)
         if role == Qt.ItemDataRole.DecorationRole:
@@ -123,14 +126,8 @@ class ThumbDelegate(QStyledItemDelegate):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(theme.color("brand"), 2))
             p.drawRoundedRect(box.adjusted(-4, -4, 4, 4), 3, 3)
-        f = QFont(option.font)
-        f.setFamilies(["Noto Sans Georgian Medium", "Noto Sans Medium", "Segoe UI"])
-        f.setPixelSize(11)
-        p.setFont(f)
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        m = p.fontMetrics()
-        tw = m.horizontalAdvance(text) + 12
-        badge = QRectF(r.x() + (r.width() - tw) / 2, top.y() + icon.height() + 8, tw, 16)
+        p.setFont(self.font(option))
+        badge, text = self.badge(r, icon, index, p.fontMetrics())
         if chosen:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.color("brand"))
@@ -138,6 +135,23 @@ class ThumbDelegate(QStyledItemDelegate):
         p.setPen(theme.color("on-brand" if chosen else "ink-muted"))
         p.drawText(badge, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
+
+    @staticmethod
+    def font(option):
+        f = QFont(option.font)
+        f.setFamilies(["Noto Sans Georgian Medium", "Noto Sans Medium", "Segoe UI"])
+        f.setPixelSize(11)
+        return f
+
+    @staticmethod
+    def badge(r, icon, index, m):
+        """The label under a page, (where, what is written). A long name (sheets of a drawing
+        have them) is cut to the page's own width; the whole name is the tooltip."""
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        room = max(r.width() - 8 - 12, 12)  # 4 px either side, 6 px of padding inside
+        text = m.elidedText(text, Qt.TextElideMode.ElideRight, room)
+        tw = m.horizontalAdvance(text) + 12
+        return QRectF(r.x() + (r.width() - tw) / 2, r.y() + 6 + icon.height() + 8, tw, 16), text
 
     def sizeHint(self, option, index):
         return index.data(Qt.ItemDataRole.SizeHintRole)

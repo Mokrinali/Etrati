@@ -659,6 +659,7 @@ def test_11_sheet_keeps_its_shape(ratio):
     assert out.shape[0] / out.shape[1] == pytest.approx(ratio, rel=.02)
 
 
+@pytest.mark.own_process
 @pytest.mark.parametrize("q", range(4))
 def test_11_aligned_lines_do_not_hide_the_direction(q):
     """Lines that repeat look like columns; reading them decides, not their look."""

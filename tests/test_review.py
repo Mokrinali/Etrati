@@ -361,7 +361,7 @@ def test_f8_password_is_known_after_saving(win, doc, tmp_path, monkeypatch):  # 
     assert "AES" in doc.info["metadata"]["encryption"]
     pfx, out = str(tmp_path / "c.pfx"), files.outbox(str(tmp_path / "s.pdf"))  # engine's folder
     signing.make_certificate(pfx, "secret", "ნინო")
-    doc._task("sign", (doc.path, out, doc._password, pfx, "secret", {}), "")
+    signing.sign_through(doc.client, doc.path, out, doc._password, pfx, "secret", {})
     assert doc._quiet("verify", out, doc._password)[0]["intact"]
     doc.undo()  # the snapshot still has its own (empty) password
     idle(doc)

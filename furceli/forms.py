@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDia
                                QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from . import files, theme
-from .client import TaskError, run_task
+from . import files, signing, theme
+from .client import run_thread
 from .dialogs import error_text
 
 
@@ -159,6 +159,56 @@ class LineDialog(QDialog):
                 "color": self._color.value(),
                 "bold": self._bold.isChecked(), "italic": self._italic.isChecked(),
                 "serif": self._line["serif"], "mono": self._line["mono"]}
+
+    def style_changed(self):
+        return self.style_() != self._start
+
+
+class ParagraphDialog(QDialog):
+    """The whole paragraph as text, written anew in its place (HANDOFF.md, item 7, stage 2)."""
+
+    LINE_ONLY = 2  # what exec() gives when only the clicked line is to change
+
+    def __init__(self, paragraph, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("აბზაცის შეცვლა")
+        self.setMinimumWidth(520)
+        self._p = paragraph
+        form = theme.form_layout(self)
+        self._text = QPlainTextEdit(paragraph["text"])
+        self._text.setMinimumHeight(140)
+        self._size = QDoubleSpinBox()
+        self._size.setRange(.5, 2000)
+        self._size.setValue(round(paragraph["size"], 2))
+        self._shown = self._size.value()
+        self._color = ColorButton(paragraph["color"])
+        self._bold, self._italic = QCheckBox("მუქი"), QCheckBox("დახრილი")
+        self._bold.setChecked(paragraph["bold"])
+        self._italic.setChecked(paragraph["italic"])
+        form.addRow("ტექსტი:", self._text)
+        form.addRow("ზომა:", self._size)
+        form.addRow("ფერი:", self._color)
+        form.addRow(self._bold)
+        form.addRow(self._italic)
+        note = QLabel("აბზაცი იმავე ადგილას, იმავე სიგანით თავიდან გადაეწყობა. თუ ტექსტი არ ეტევა, "
+                      "ასოები ცოტათი დაპატარავდება; ქვემოთ მყოფი არ ჩამოიწევს. ფონტი მსგავსით იცვლება.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = _buttons(self, "შეცვლა")
+        line = buttons.addButton("მხოლოდ ეს სტრიქონი…", QDialogButtonBox.ButtonRole.ResetRole)
+        line.clicked.connect(lambda: self.done(self.LINE_ONLY))
+        form.addRow(buttons)
+        self._start = self.style_()
+
+    def text(self):
+        return self._text.toPlainText()
+
+    def style_(self):
+        size = self._size.value()
+        return {"size": self._p["size"] if size == self._shown else size,
+                "color": self._color.value(),
+                "bold": self._bold.isChecked(), "italic": self._italic.isChecked(),
+                "serif": self._p["serif"], "mono": self._p["mono"]}
 
     def style_changed(self):
         return self.style_() != self._start
@@ -632,13 +682,15 @@ class SignDialog(QDialog):
             os.path.expanduser(f"~/{files.safe_name(name)}.pfx")), "სერტიფიკატი (*.pfx)")
         if not out:
             return
-        tmp = files.outbox(out)
+        # Made here, never in an engine or its folder: an engine opens strangers' PDFs and
+        # must neither learn the password nor slip in a key of its own (Fable's review, №6).
+        tmp = files.temp_name(out)
         try:
-            run_task(self.client, "make_certificate", (tmp, pw, name.strip()), "იქმნება…", self)
+            run_thread(lambda: signing.make_certificate(tmp, pw, name.strip()), "იქმნება…", self)
             files.put_in_place(tmp, out)  # a certificate that was there is kept as a backup
-        except (TaskError, OSError) as e:
-            QMessageBox.warning(self, self.windowTitle(), "სერტიფიკატი ვერ შეიქმნა. " + error_text(
-                str(e) if isinstance(e, TaskError) else "no_access"))
+        except OSError:
+            QMessageBox.warning(self, self.windowTitle(),
+                                "სერტიფიკატი ვერ შეიქმნა. " + error_text("no_access"))
             return
         finally:
             files.discard(tmp)

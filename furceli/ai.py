@@ -6,6 +6,8 @@ untrusted input, so the model gets no tools: it can only answer with text.
 from __future__ import annotations
 
 import base64
+import contextlib
+import os
 import threading
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -48,20 +50,61 @@ SYSTEM = (
 
 
 # -- key storage ------------------------------------------------------------
+# DPAPI keeps the key from other Windows users, not from a process of low integrity of the
+# same user, and the engines (low integrity) read whatever the user may read, the settings
+# too. So the key lives in a file of its own that such processes may not even read.
+def key_file(settings) -> str:
+    return os.path.splitext(settings.fileName())[0] + ".ai-key"
+
+
+def _no_read_up(path):
+    """Medium integrity label with no-read-up: a process of low integrity cannot read it."""
+    import ctypes
+    from ctypes import wintypes
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    adv.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    if not adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            "S:(ML;;NRNWNX;;;ME)", 1, ctypes.byref(sd), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not adv.SetFileSecurityW(path, 0x10, sd):  # LABEL_SECURITY_INFORMATION
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        ctypes.windll.kernel32.LocalFree(sd)
+
+
 def save_key(settings, key):
-    """Encrypted for this Windows user only (DPAPI)."""
+    """Encrypted for this Windows user only (DPAPI), where the engines cannot read it."""
     import win32crypt
     blob = win32crypt.CryptProtectData(key.encode(), "ETRATI", None, None, None, 0)
-    settings.setValue("ai/key", base64.b64encode(blob).decode())
+    path = key_file(settings)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path + ".new", "wb") as f:
+        _no_read_up(path + ".new")  # before anything is in it
+        f.write(blob)
+    os.replace(path + ".new", path)
+    settings.remove("ai/key")
+
+
+def forget_key(settings):
+    settings.remove("ai/key")
+    with contextlib.suppress(OSError):
+        os.remove(key_file(settings))
 
 
 def load_key(settings):
-    raw = settings.value("ai/key", "")
-    if not raw:
-        return ""
     try:
         import win32crypt
-        return win32crypt.CryptUnprotectData(base64.b64decode(raw), None, None, None, 0)[1].decode()
+        raw = settings.value("ai/key", "")
+        if raw:  # kept among the settings by older versions: moved where engines cannot read
+            key = win32crypt.CryptUnprotectData(base64.b64decode(raw), None, None, None, 0)[1].decode()
+            save_key(settings, key)
+            return key
+        with open(key_file(settings), "rb") as f:
+            return win32crypt.CryptUnprotectData(f.read(), None, None, None, 0)[1].decode()
     except Exception:
         return ""
 
@@ -254,7 +297,7 @@ class AiSettings(QDialog):
         if key:
             save_key(self.settings, key)
         else:
-            self.settings.remove("ai/key")
+            forget_key(self.settings)
         self.settings.setValue("ai/model", self._model.currentData())
         self.accept()
 

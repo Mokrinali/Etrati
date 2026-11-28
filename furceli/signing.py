@@ -42,17 +42,102 @@ def make_certificate(out, password, name):
         f.write(data)
 
 
+# Signing goes in steps, so that the private key and its password never reach an engine
+# (Fable's review, №6): an engine opens strangers' PDFs and may be taken over by one.
+#   window: load_signer, certificate  ->  engine: prepare (the document with room for the
+#   signature)  ->  window: sign_prepared (hashes the prepared file itself, so the key is
+#   only ever put to the file the user gets)  ->  engine: finish (puts the signature in).
+def sign_through(engine, src, out, password, pfx, pfx_password, o, text="", parent=None):
+    """The window's way: the key stays in this process, the engine only sees the PDF."""
+    from .client import run_task
+    signer = load_signer(pfx, pfx_password)
+    prep = run_task(engine, "sign_prepare", (src, out, password, certificate(signer), o),
+                    text, parent)
+    cms = sign_prepared(signer, out, prep)
+    run_task(engine, "sign_finish", (out, prep, cms, password), text, parent)
+
+
 def sign(src, out, password, pfx, pfx_password, o):
-    """Sign a saved file into a new one; earlier signatures stay valid."""
-    from pyhanko.pdf_utils import generic
-    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-    from pyhanko.pdf_utils.writer import PdfReadError
-    from pyhanko.sign import fields, signers
+    """Sign a saved file into a new one, all in this process; earlier signatures stay valid."""
+    signer = load_signer(pfx, pfx_password)
+    prep = prepare(src, out, password, certificate(signer), o)
+    finish(out, prep, sign_prepared(signer, out, prep), password)
+
+
+def load_signer(pfx, pfx_password):
+    from pyhanko.sign import signers
     try:
         signer = signers.SimpleSigner.load_pkcs12(pfx, passphrase=pfx_password.encode())
     except Exception:
         signer = None
     if signer is None:
+        raise EngineError("bad_certificate")
+    return signer
+
+
+def certificate(signer) -> dict:
+    """What the engine needs of the certificate: everything but the private key."""
+    bits = signer.signing_cert.public_key.bit_size
+    return {"cert": signer.signing_cert.dump(), "chain": [c.dump() for c in signer.cert_registry],
+            "size": max(512, 2 * ((bits + 7) // 8)),  # room for the signature value
+            "name": str(signer.signing_cert.subject.native.get("common_name", ""))}
+
+
+def sign_prepared(signer, out, prep) -> bytes:
+    """The signature (CMS) of the prepared file. The digest is taken here from the file
+    itself, not from the engine: a lying engine gets nothing else signed."""
+    import asyncio
+    import hashlib
+    start, end, md = prep["start"], prep["end"], prep["md"]
+    with open(out, "rb") as f:
+        data = f.read()
+    if not (isinstance(start, int) and isinstance(end, int) and 0 < start < end <= len(data)
+            and md in ("sha256", "sha384", "sha512")):
+        raise EngineError("sign_failed")
+    digest = hashlib.new(md, data[:start] + data[end:]).digest()
+    if digest != prep["digest"]:
+        raise EngineError("sign_failed")
+    try:
+        return asyncio.run(signer.async_sign(digest, md, use_pades=True)).dump()
+    except Exception as e:
+        raise EngineError(f"sign_failed: {type(e).__name__}")
+
+
+def finish(out, prep, cms, password):
+    """Put the signature into the prepared file and check it."""
+    from pyhanko.sign.signers.pdf_byterange import PreparedByteRangeDigest
+    from pyhanko.sign.signers.pdf_signer import PdfTBSDocument
+    digest = PreparedByteRangeDigest(document_digest=prep["digest"],
+                                     reserved_region_start=prep["start"],
+                                     reserved_region_end=prep["end"])
+    try:
+        with open(out, "r+b") as f:
+            PdfTBSDocument.finish_signing(f, digest, cms)
+    except Exception as e:
+        raise EngineError(f"sign_failed: {type(e).__name__}")
+    check = verify(out, password)
+    if not check or not check[-1]["intact"]:
+        os.remove(out)
+        raise EngineError("sign_failed")
+
+
+def prepare(src, out, password, cert, o):
+    """The document with its signature field and room for the signature, written to out.
+    Returns what sign_prepared and finish need."""
+    import asyncio
+
+    from asn1crypto import x509
+    from pyhanko.pdf_utils import generic
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+    from pyhanko.pdf_utils.writer import PdfReadError
+    from pyhanko.sign import fields, signers
+    from pyhanko_certvalidator.registry import SimpleCertificateStore
+    try:
+        signer = signers.ExternalSigner(
+            x509.Certificate.load(cert["cert"]),
+            SimpleCertificateStore.from_certs([x509.Certificate.load(c) for c in cert["chain"]]),
+            signature_value=int(cert["size"]))
+    except Exception:
         raise EngineError("bad_certificate")
     with open(src, "rb") as f:
         data = io.BytesIO(f.read())
@@ -89,19 +174,17 @@ def sign(src, out, password, pfx, pfx_password, o):
         field_name=name, reason=o.get("reason") or None, location=o.get("location") or None,
         subfilter=fields.SigSeedSubFilter.PADES)
     try:
-        result = signers.PdfSigner(meta, signer, stamp_style=style, new_field_spec=spec).sign_pdf(
-            w, existing_fields_only=spec is None)
+        pdf_signer = signers.PdfSigner(meta, signer, stamp_style=style, new_field_spec=spec)
+        with open(out, "wb") as f:
+            digest, tbs, _ = asyncio.run(pdf_signer.async_digest_doc_for_signing(
+                w, existing_fields_only=spec is None, output=f))
     except Exception as e:
         raise EngineError(f"sign_failed: {type(e).__name__}")
     finally:
         if looks:
             shutil.rmtree(looks, ignore_errors=True)
-    with open(out, "wb") as f:
-        f.write(result.getbuffer())
-    check = verify(out, password)
-    if not check or not check[-1]["intact"]:
-        os.remove(out)
-        raise EngineError("sign_failed")
+    return {"digest": digest.document_digest, "start": digest.reserved_region_start,
+            "end": digest.reserved_region_end, "md": tbs.md_algorithm}
 
 
 def _stamp(src, password, o, signer, folder):

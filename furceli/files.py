@@ -84,8 +84,55 @@ def _replace(tmp: str, target: str):
 def discard(path: str):
     """Remove a temporary file; one that cannot be removed must not hide the real outcome."""
     with contextlib.suppress(OSError):
-        if os.path.exists(path):
+        if os.name == "nt" and _in_engine_root(path):
+            _remove_engine_file(path)
+        elif os.path.exists(path):
             os.remove(path)
+
+
+def _in_engine_root(path: str) -> bool:
+    if not _root:
+        return False
+    path, root = (os.path.normcase(os.path.abspath(p)) for p in (path, _root))
+    return path.startswith(root + os.sep)
+
+
+def _remove_engine_file(path: str):
+    """Remove a file of the engine's folder, never one that a junction made by a taken-over
+    engine leads to: the window has the rights the engine lacks. The file is opened first,
+    without following a link at its end; what the handle really is gets checked, and the
+    handle deletes it, so nothing can be swapped in between."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD,
+                                            wintypes.DWORD]
+    k.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                             wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, read_attributes, share_all, open_existing = 0x10000, 0x80, 7, 3
+    open_reparse_point = 0x00200000
+    h = k.CreateFileW(os.path.abspath(path), delete | read_attributes, share_all, None,
+                      open_existing, open_reparse_point, None)
+    if h is None or h == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        buf = ctypes.create_unicode_buffer(32768)
+        if not k.GetFinalPathNameByHandleW(h, buf, len(buf), 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        real = buf.value
+        real = "\\\\" + real[8:] if real.startswith("\\\\?\\UNC\\") else real.removeprefix("\\\\?\\")
+        real, root = os.path.normcase(real), os.path.normcase(os.path.realpath(str(_root)))
+        if not real.startswith(root + os.sep):
+            raise OSError("not the engine's file")
+        delete_file = ctypes.c_ubyte(1)  # FILE_DISPOSITION_INFO
+        if not k.SetFileInformationByHandle(h, 4, ctypes.byref(delete_file), 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k.CloseHandle(h)
 
 
 def _near(tmp: str, target: str) -> str:

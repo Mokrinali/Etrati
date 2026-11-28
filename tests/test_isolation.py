@@ -13,7 +13,7 @@ from test_ui_pages import idle  # noqa: F401
 from furceli import client, files
 
 WRITES = {"save": [0], "export": None, "merge": [2], "pdfa": [0], "make_pdf": [1],
-          "export_as": [1], "to_images": None, "sign": [1], "make_certificate": [0],
+          "export_as": [1], "to_images": None, "sign_prepare": [1], "sign_finish": [0],
           "scan_build": [3], "scan_join": [1]}
 
 
