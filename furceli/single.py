@@ -16,10 +16,51 @@ LIMIT = 1 << 20
 END = bytes([10])  # a newline
 
 
+def _identity():
+    """(account, Windows session) of this program. Pipe names are shared by the whole
+    computer: a user name is not unique (a local and a domain "admin"), and one account may
+    sit in two sessions (Remote Desktop), each with a window of its own."""
+    if sys.platform != "win32":
+        return getpass.getuser(), 0
+    import win32api
+    import win32con
+    import win32security
+    import win32ts
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    return win32security.ConvertSidToStringSid(sid), win32ts.ProcessIdToSessionId(os.getpid())
+
+
 def channel() -> str:
-    """A name of its own for every user (and for every settings file, in tests)."""
-    key = getpass.getuser() + "|" + os.environ.get("FURCELI_SETTINGS", "")
+    """A name of its own for every account and session (and settings file, in tests)."""
+    account, session = _identity()
+    key = f"{account}|{session}|" + os.environ.get("FURCELI_SETTINGS", "")
     return "ETRATI-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def server_is_mine(sock) -> bool:
+    """Is the program at the other end of the pipe one of this account? Another user may take
+    the pipe's name first; the paths of the files must not go to it (Fable's review, №9)."""
+    if sys.platform != "win32":
+        return True  # there the socket file of the user is already private
+    import ctypes
+    from ctypes import wintypes
+
+    import win32api
+    import win32con
+    import win32security
+    pid = wintypes.ULONG()
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
+    if not k.GetNamedPipeServerProcessId(int(sock.socketDescriptor()), ctypes.byref(pid)):
+        return False
+    try:
+        proc = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        token = win32security.OpenProcessToken(proc, win32con.TOKEN_QUERY)
+        theirs = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    except win32api.error:  # a process of another account cannot even be looked into
+        return False
+    return win32security.ConvertSidToStringSid(theirs) == _identity()[0]
 
 
 def hand_over(paths, name=None, wait=3000) -> bool:
@@ -27,6 +68,9 @@ def hand_over(paths, name=None, wait=3000) -> bool:
     sock = QLocalSocket()
     sock.connectToServer(name or channel())
     if not sock.waitForConnected(300):
+        return False
+    if not server_is_mine(sock):
+        sock.abort()
         return False
     if sys.platform == "win32":  # let the other window come to the front
         import ctypes
